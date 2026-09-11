@@ -163,3 +163,11 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Se agregó paginación frontend de 24 publicaciones por página después de aplicar filtros y ordenamiento.
 - La paginación funciona tanto en Tarjetas como en Tabla, conserva filtros y permite navegar con anterior/siguiente y números de página.
 - El modal de carta sigue apuntando al resultado correcto dentro de cada página.
+
+
+## v0.22
+
+- Se suavizó el fondo general: ya no usa una imagen cargada en el fondo y ahora solo muestra partículas sutiles de chispas para no molestar la lectura.
+- La paleta forge sigue siendo oscura, pero se aclaró un poco para separar mejor el fondo del contenedor de resultados y de cada tarjeta.
+- Se reforzó visualmente el contraste del área que contiene las tarjetas para que las cartas se distingan más fácil.
+- Se mantuvo la vista Tarjetas y la paginación, sin agregar iconos de carrito junto a “Comprar” ni junto al selector de vista.
