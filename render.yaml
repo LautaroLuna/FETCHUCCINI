@@ -6,7 +6,6 @@ services:
     buildCommand: ./build.sh
     startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 180 --access-logfile - --error-logfile -
     healthCheckPath: /health/
-    maxShutdownDelaySeconds: 60
     envVars:
       - key: SECRET_KEY
         generateValue: true
