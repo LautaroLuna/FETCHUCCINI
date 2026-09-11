@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from .base import StoreAdapter
 from ..models import Listing
-from ..utils import as_int, exactish_card_name, normalize_space
+from ..utils import as_int, exactish_card_name, normalize_space, parse_ars
 
 
 class MercadiaAdapter(StoreAdapter):
@@ -19,6 +19,7 @@ class MercadiaAdapter(StoreAdapter):
     SEARCH = f"{BASE}/index.php/catalogsearch/result/"
     GRAPHQL_ENDPOINTS = (f"{BASE}/graphql", f"{BASE}/index.php/graphql")
     AUTOCOMPLETE = f"{BASE}/index.php/mageworx_searchsuiteautocomplete/ajax/index/"
+    NATIVE_SUGGEST = f"{BASE}/index.php/search/ajax/suggest/"
     DETAIL_WORKERS = 2
 
     # Magento's public storefront GraphQL is the preferred online path. The
@@ -175,11 +176,12 @@ class MercadiaAdapter(StoreAdapter):
             return None
         # Common Mercadia media filenames contain `_m10_m10-146-lightning...`.
         if set_code:
-            m = re.search(rf"[_/-]{re.escape(set_code)}[-_]([^/_-]+)-", image_url, flags=re.I)
-            if m:
-                return m.group(1)
-        m = re.search(r"[-_](\d+[A-Za-z★]*)-", image_url)
-        return m.group(1) if m else None
+            matches = re.findall(rf"[_/-]{re.escape(set_code)}[-_]([^/_-]+)-", image_url, flags=re.I)
+            for value in reversed(matches):
+                if re.fullmatch(r"\d+[A-Za-z★]*", value):
+                    return value
+        matches = re.findall(r"[-_](\d+[A-Za-z★]*)-", image_url)
+        return matches[-1] if matches else None
 
     def _graphql_request(self, endpoint: str, query: str, variables: dict) -> dict:
         params = {"query": query, "variables": json.dumps(variables, separators=(",", ":"))}
@@ -264,6 +266,149 @@ class MercadiaAdapter(StoreAdapter):
             raise last_error
         return out
 
+    @staticmethod
+    def _flatten_autocomplete_products(data: dict) -> list[dict]:
+        """Return MageWorx product entries from its public autocomplete JSON.
+
+        Current MageWorx versions return {"result": [{"code": "product",
+        "data": [...]}, ...]}. Older/customized versions sometimes wrap the
+        same payload differently, so this deliberately accepts a few shapes.
+        """
+        products = []
+
+        def add_items(value):
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        products.append(item)
+
+        result = data.get("result") if isinstance(data, dict) else None
+        if isinstance(result, list):
+            for section in result:
+                if not isinstance(section, dict):
+                    continue
+                code = str(section.get("code") or "").casefold()
+                payload = section.get("data")
+                if "product" in code and isinstance(payload, list):
+                    add_items(payload)
+
+        # Compatibility with stores that expose products directly.
+        if not products and isinstance(data, dict):
+            for key in ("products", "items", "product"):
+                add_items(data.get(key))
+
+        return products
+
+    @staticmethod
+    def _field(item: dict, *names):
+        for name in names:
+            if name in item and item.get(name) not in (None, ""):
+                return item.get(name)
+        return None
+
+    def _listing_from_autocomplete_item(self, item: dict, card_name: str, salable_signal_available: bool) -> Listing | None:
+        name = normalize_space(self._field(item, "name", "title", "product_name"))
+        if not name or not exactish_card_name(name, card_name):
+            return None
+
+        # MageWorx only adds add_to_cart for salable items. If the field is
+        # enabled in this store's autocomplete config, its absence is a reliable
+        # out-of-stock signal and we skip the item entirely.
+        if salable_signal_available and not self._field(item, "add_to_cart", "addToCart", "addtocart"):
+            return None
+
+        url = self._field(item, "url", "product_url", "productUrl")
+        if not url:
+            return None
+        url = urljoin(self.BASE, str(url))
+
+        image = self._field(item, "image", "image_url", "small_image", "thumbnail")
+        if isinstance(image, dict):
+            image = image.get("url") or image.get("src")
+        if image:
+            image = urljoin(self.BASE, str(image))
+
+        sku = normalize_space(str(self._field(item, "sku") or "")) or None
+        description = self._field(item, "description", "short_description", "shortDescription")
+        if isinstance(description, dict):
+            description = description.get("html") or description.get("value") or ""
+        description = str(description or "")
+        meta = self._description_meta(description, name)
+
+        price_raw = self._field(item, "price", "final_price", "finalPrice")
+        if isinstance(price_raw, dict):
+            price_raw = price_raw.get("value") or price_raw.get("amount") or price_raw.get("formatted")
+        if isinstance(price_raw, (int, float, Decimal)):
+            price = Decimal(str(price_raw))
+        else:
+            price_text = BeautifulSoup(str(price_raw or ""), "html.parser").get_text(" ", strip=True)
+            price = parse_ars(price_text)
+
+        collector = self._collector_from_image(image, meta.get("set_code"))
+        product_id = None
+        for pattern in (r"/id/(\d+)/", r"product/(\d+)", r"product_id[=/](\d+)"):
+            m = re.search(pattern, url)
+            if m:
+                product_id = m.group(1)
+                break
+
+        return Listing(
+            store=self.name,
+            card_name=name,
+            set_name=meta.get("set_code"),
+            set_code=meta.get("set_code"),
+            collector_number=collector,
+            language=meta.get("language"),
+            condition=meta.get("condition"),
+            finish=meta.get("finish"),
+            price=price,
+            currency="ARS",
+            stock=None,
+            available=True,
+            url=url,
+            image_url=image,
+            product_id=product_id,
+            sku=sku,
+        )
+
+    def _autocomplete_listings(self, card_name: str) -> list[Listing]:
+        """Use MageWorx autocomplete as a self-contained data source.
+
+        This intentionally does *not* open the product detail pages. Mercadia's
+        WAF may reject those requests from hosting providers even when the small
+        public autocomplete endpoint is allowed.
+        """
+        response = self.http.get(
+            self.AUTOCOMPLETE,
+            params={"q": card_name},
+            headers={"Accept": "application/json, text/javascript, */*; q=0.01"},
+        )
+        data = response.json()
+        items = self._flatten_autocomplete_products(data)
+        if not items:
+            return []
+
+        salable_signal_available = any(
+            any(key in item for key in ("add_to_cart", "addToCart", "addtocart"))
+            for item in items
+            if isinstance(item, dict)
+        )
+
+        out = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            listing = self._listing_from_autocomplete_item(item, card_name, salable_signal_available)
+            if not listing:
+                continue
+            key = (listing.url, listing.sku)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(listing)
+        return out
+
     def _autocomplete_links(self, card_name: str):
         """Small public MageWorx endpoint used only if GraphQL is unavailable."""
         data = self.http.get(self.AUTOCOMPLETE, params={"q": card_name}, headers={"Accept": "application/json"}).json()
@@ -317,15 +462,28 @@ class MercadiaAdapter(StoreAdapter):
             return [row for row in pool.map(lambda pair: self._detail(*pair), candidates) if row.available and (row.stock is None or row.stock > 0)]
 
     def search(self, card_name: str) -> list[Listing]:
-        graphql_error = None
+        errors = []
+
+        # First choice: MageWorx autocomplete already contains product name,
+        # SKU, image, description, price and URL. Using it directly avoids the
+        # detail-page requests that Mercadia blocks most aggressively on hosts.
+        try:
+            rows = self._autocomplete_listings(card_name)
+            if rows:
+                return rows
+        except Exception as exc:
+            errors.append(f"autocomplete: {exc}")
+
+        # Second choice: Magento storefront GraphQL.
         try:
             rows = self._graphql_search(card_name)
             if rows:
                 return rows
         except Exception as exc:
-            graphql_error = exc
+            errors.append(f"graphql: {exc}")
 
-        # Try the lightweight public autocomplete before the old catalog page.
+        # Older MageWorx path: URLs from autocomplete + detail enrichment. This
+        # remains useful locally even if hosted detail requests are rejected.
         try:
             links = self._autocomplete_links(card_name)
             if links:
@@ -334,12 +492,19 @@ class MercadiaAdapter(StoreAdapter):
                 rows = [r for r in rows if r.available and (r.stock is None or r.stock > 0)]
                 if rows:
                     return rows
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(f"autocomplete-detail: {exc}")
 
         try:
-            return self._legacy_html_search(card_name)
-        except Exception:
-            if graphql_error:
-                raise graphql_error
-            raise
+            rows = self._legacy_html_search(card_name)
+            if rows:
+                return rows
+        except Exception as exc:
+            errors.append(f"catalogsearch: {exc}")
+
+        # Keep the full chain in the server/UI tooltip. That lets us know which
+        # public Mercadia path is rejecting Railway without needing screenshots.
+        if errors:
+            raise RuntimeError("Mercadia routes failed | " + " | ".join(errors))
+        return []
+
