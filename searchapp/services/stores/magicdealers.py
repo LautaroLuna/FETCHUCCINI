@@ -184,11 +184,11 @@ class MagicDealersAdapter(StoreAdapter):
         return rows, (next_link.get("href") if next_link else None)
 
     def _build_listing(self, card_name: str, row: dict) -> Listing:
-        # The search page already contains the information needed for comparing
-        # price/stock. Product detail pages are much slower and are the part of
-        # MagicDealers most likely to throttle us, so only enrich listings that
-        # actually have stock. This cuts dozens of unnecessary requests.
-        details = self._detail_fields(row["url"]) if (row.get("stock") or 0) > 0 else {}
+        # Public-hosting mode: the search page already has the fields needed for
+        # comparison. Do not open a detail page for every in-stock result: that
+        # made MagicDealers take several minutes and increased TLS/503 failures.
+        # Set/price/condition/language/stock/image remain available immediately.
+        details = {}
         title = row["title"]
         style = title.split(" - ", 1)[1] if " - " in title else None
         inferred_finish = "Foil" if "foil" in title.casefold() else None

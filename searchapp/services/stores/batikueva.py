@@ -135,7 +135,10 @@ class BatikuevaAdapter(StoreAdapter):
                     continue
 
                 url = urljoin(self.BASE, href or "")
-                set_name, collector = self._detail_set(url)
+                # Production-friendly mode: all comparison-critical fields already
+                # live in the search card. Avoid one extra product-page request per
+                # result, which made public searches much slower.
+                set_name, collector = None, None
                 style = None
                 m = re.search(r"\(([^)]+)\)", title or "")
                 if m:

@@ -325,6 +325,16 @@ function isStoreFinished(state){
   return ['done','cached','error','stale-error'].includes(state?.status);
 }
 
+function friendlyStoreError(error){
+  const text = String(error || '');
+  const low = text.toLowerCase();
+  if(low.includes('403') || low.includes('forbidden')) return 'bloqueada desde hosting';
+  if(low.includes('429') || low.includes('too many requests')) return 'límite de consultas';
+  if(low.includes('timeout') || low.includes('timed out')) return 'demoró demasiado';
+  if(low.includes('ssl') || low.includes('eof')) return 'conexión inestable';
+  return 'no respondió';
+}
+
 function renderStoreStates(){
   storeStatus.innerHTML = activeStoreKeys.map(key => {
     const state = storeStates.get(key) || {status:'loading'};
@@ -344,7 +354,7 @@ function renderStoreStates(){
       return `<span class="pill stale"${title}>${esc(label)}: ${count} · último dato ${age}</span>`;
     }
     if(state.status === 'error'){
-      return `<span class="pill error"${title}>${esc(label)}: no respondió</span>`;
+      return `<span class="pill error"${title}>${esc(label)}: ${esc(friendlyStoreError(state.error))}</span>`;
     }
     if(state.status === 'done'){
       return `<span class="pill">${esc(label)}: ${count} · ${elapsed} ms</span>`;
@@ -442,8 +452,10 @@ async function fetchCacheSnapshot(query, stores, generation){
 
 async function fetchOneStore(query, key, generation){
   const params = new URLSearchParams({q:query, store:key});
+  const controller = new AbortController();
+  const timeoutId = setTimeout(()=>controller.abort(), 90000);
   try{
-    const response = await fetch(`/api/search/store/?${params}`);
+    const response = await fetch(`/api/search/store/?${params}`, {signal:controller.signal});
     const data = await response.json();
     if(generation !== searchGeneration) return;
     if(!response.ok) throw new Error(data.error || 'Error');
@@ -465,6 +477,8 @@ async function fetchOneStore(query, key, generation){
     }
     renderStoreStates();
     updateOverallStatus();
+  }finally{
+    clearTimeout(timeoutId);
   }
 }
 
