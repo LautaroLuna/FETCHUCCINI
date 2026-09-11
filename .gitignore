@@ -9,3 +9,5 @@ __pycache__/
 .DS_Store
 
 .cache/
+mercadia_bridge_config.bat
+mercadia_bridge.log

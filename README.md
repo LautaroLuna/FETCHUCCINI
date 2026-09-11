@@ -184,3 +184,11 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 
 - Pirulo ya considera una búsqueda GraphQL exitosa con cero publicaciones como un resultado válido; esto evita falsos errores para cartas que Pirulo no tiene en stock.
 - Mercadia detecta el 403 del hosting y falla rápido con un mensaje explícito. La tienda bloquea actualmente las rutas públicas probadas desde Railway, por lo que su recuperación requiere whitelist/API autorizada o una estrategia de sincronización desde una red permitida.
+
+
+## v0.26 — Mercadia Bridge
+
+- Mercadia puede sincronizarse desde una PC Windows mediante un bridge local protegido por una clave privada.
+- Railway nunca necesita consultar directamente el origen de Mercadia cuando el bridge está habilitado.
+- Incluye BAT de instalación, ejecución manual y desinstalación de la tarea horaria.
+- El cache de Mercadia sincronizado es fresco por 2 horas y conserva fallback hasta 7 días.

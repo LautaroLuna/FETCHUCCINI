@@ -1,9 +1,13 @@
 import hashlib
+import json
+import secrets
 import time
 
 from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_GET, require_POST
 from django.shortcuts import render
 
 from .services.aggregator import SearchAggregator
@@ -13,6 +17,12 @@ from .services.scryfall import ScryfallService
 FRESH_CACHE_SECONDS = 5 * 60
 STALE_CACHE_SECONDS = 24 * 60 * 60
 AUTOCOMPLETE_CACHE_SECONDS = 60 * 60
+
+MERCADIA_BRIDGE_FRESH_SECONDS = 2 * 60 * 60
+MERCADIA_BRIDGE_STALE_SECONDS = 7 * 24 * 60 * 60
+MERCADIA_BRIDGE_PENDING_SECONDS = 7 * 24 * 60 * 60
+MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v1:pending"
+
 
 
 
@@ -104,6 +114,131 @@ def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
     return data
 
 
+
+def _mercadia_bridge_enabled():
+    return bool(getattr(settings, "MERCADIA_BRIDGE_ENABLED", False))
+
+
+def _mercadia_bridge_authorized(request):
+    expected = (getattr(settings, "MERCADIA_BRIDGE_KEY", "") or "").strip()
+    provided = (request.headers.get("X-Fetchuccini-Bridge-Key") or "").strip()
+    return bool(expected and provided and secrets.compare_digest(expected, provided))
+
+
+def _queue_mercadia_bridge_query(query: str):
+    normalized = " ".join(query.casefold().split())
+    pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
+    pending[normalized] = {
+        "q": query,
+        "requested_at": float(time.time()),
+    }
+    # This queue is intentionally tiny (a few friends using the site), so a
+    # single cache object is simpler than introducing a database dependency.
+    cache.set(MERCADIA_BRIDGE_PENDING_KEY, pending, MERCADIA_BRIDGE_PENDING_SECONDS)
+
+
+def _remove_mercadia_bridge_query(query: str):
+    normalized = " ".join(query.casefold().split())
+    pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
+    if normalized in pending:
+        pending.pop(normalized, None)
+        cache.set(MERCADIA_BRIDGE_PENDING_KEY, pending, MERCADIA_BRIDGE_PENDING_SECONDS)
+
+
+def _mercadia_bridge_waiting_payload(query: str, *, stale_snapshot=None):
+    if stale_snapshot is not None:
+        return _response_from_snapshot(
+            stale_snapshot,
+            stale=True,
+            error="Mercadia Bridge: esperando la próxima sincronización local.",
+        )
+    return {
+        "query": query,
+        "store_key": "mercadia",
+        "results": [],
+        "store": {
+            "store": "Mercadia",
+            "count": 0,
+            "elapsed_ms": 0,
+            "error": "Mercadia Bridge: pendiente de sincronización local.",
+        },
+        "cached": False,
+        "fresh": False,
+        "stale": False,
+        "age_seconds": 0,
+        "bridge_pending": True,
+    }
+
+
+@require_GET
+def mercadia_bridge_jobs_api(request):
+    if not _mercadia_bridge_authorized(request):
+        return JsonResponse({"error": "No autorizado."}, status=403)
+
+    try:
+        limit = max(1, min(int(request.GET.get("limit") or 50), 200))
+    except ValueError:
+        limit = 50
+
+    pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
+    jobs = sorted(pending.values(), key=lambda item: item.get("requested_at", 0))[:limit]
+    return JsonResponse({"jobs": jobs, "count": len(jobs)})
+
+
+@csrf_exempt
+@require_POST
+def mercadia_bridge_push_api(request):
+    if not _mercadia_bridge_authorized(request):
+        return JsonResponse({"error": "No autorizado."}, status=403)
+
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return JsonResponse({"error": "JSON inválido."}, status=400)
+
+    query = str(payload.get("q") or "").strip()
+    if not query or len(query) > 120:
+        return JsonResponse({"error": "Consulta inválida."}, status=400)
+
+    raw_results = payload.get("results") or []
+    if not isinstance(raw_results, list):
+        return JsonResponse({"error": "results debe ser una lista."}, status=400)
+
+    cleaned = []
+    for row in raw_results[:500]:
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        row["store"] = "Mercadia"
+        if _is_in_stock_result(row):
+            cleaned.append(row)
+
+    try:
+        elapsed_ms = max(0, int(payload.get("elapsed_ms") or 0))
+    except (TypeError, ValueError):
+        elapsed_ms = 0
+
+    snapshot = {
+        "query": query,
+        "store_key": "mercadia",
+        "results": cleaned,
+        "store": {
+            "store": "Mercadia",
+            "count": len(cleaned),
+            "elapsed_ms": elapsed_ms,
+            "error": None,
+        },
+        "cached_at": time.time(),
+        "bridge": True,
+    }
+    fresh_key, stale_key = _store_cache_keys(query, "mercadia")
+    cache.set(fresh_key, snapshot, MERCADIA_BRIDGE_FRESH_SECONDS)
+    cache.set(stale_key, snapshot, MERCADIA_BRIDGE_STALE_SECONDS)
+    _remove_mercadia_bridge_query(query)
+
+    return JsonResponse({"ok": True, "query": query, "count": len(cleaned)})
+
+
 def autocomplete_api(request):
     """Return Scryfall card-name suggestions for the search box.
 
@@ -167,6 +302,14 @@ def search_store_api(request):
     fresh = cache.get(fresh_key)
     if fresh is not None:
         return JsonResponse(_response_from_snapshot(fresh, fresh=True))
+
+    # Mercadia blocks Railway/Render IPs with HTTP 403. In bridge mode, never
+    # keep hammering the origin from the server: queue the requested card and
+    # let the user's trusted Windows bridge refresh it from their home network.
+    if store_key == "mercadia" and _mercadia_bridge_enabled():
+        _queue_mercadia_bridge_query(query)
+        stale = cache.get(stale_key)
+        return JsonResponse(_mercadia_bridge_waiting_payload(query, stale_snapshot=stale))
 
     rows, run = aggregator.search_store(query, store_key)
     if run.error:

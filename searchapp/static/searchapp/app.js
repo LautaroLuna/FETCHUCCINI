@@ -498,6 +498,7 @@ function isStoreFinished(state){
 function friendlyStoreError(error){
   const text = String(error || '');
   const low = text.toLowerCase();
+  if(low.includes('mercadia bridge') || low.includes('sincronización local')) return 'pendiente de sincronización';
   if(low.includes('403') || low.includes('forbidden')) return 'no disponible online';
   if(low.includes('429') || low.includes('too many requests')) return 'límite de consultas';
   if(low.includes('timeout') || low.includes('timed out')) return 'demoró demasiado';

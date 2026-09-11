@@ -53,6 +53,16 @@ FETCHUCCINI_DISABLED_STORES = tuple(
     if store.strip()
 )
 
+
+# v0.26: Mercadia Bridge. Railway cannot currently query Mercadia directly
+# (HTTP 403 from the storefront). A trusted local Fetchuccini installation can
+# sync requested Mercadia searches into Railway over HTTPS using this secret.
+MERCADIA_BRIDGE_KEY = (os.environ.get("MERCADIA_BRIDGE_KEY") or "").strip()
+MERCADIA_BRIDGE_ENABLED = bool(MERCADIA_BRIDGE_KEY) and (
+    is_render or is_railway or
+    (os.environ.get("MERCADIA_BRIDGE_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+)
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
