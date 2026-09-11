@@ -1,4 +1,4 @@
-# Fetchuccini — MVP 0.10
+# Fetchuccini — MVP 0.120
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 
@@ -133,3 +133,18 @@ Cada tienda implementa `search(card_name)` y devuelve `Listing` normalizados. Es
 - Los endpoints progresivos nuevos son `GET /api/search/store/` y `GET /api/search/cache/`.
 
 No requiere migraciones nuevas.
+
+
+## Deploy público
+
+La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoise y Gunicorn). Ver `DEPLOY_RENDER.md`.
+
+
+## Cambios v0.15
+
+- La versión online no consulta Pirulo ni Mercadia mientras rechacen tráfico de servidores públicos.
+- Solo se muestran publicaciones realmente disponibles: `available=True` y stock mayor a 0 cuando la tienda informa cantidad.
+- Se eliminó el filtro “Solo con stock” porque ahora es el comportamiento fijo.
+- Heavily Played / Muy Jugada se muestra en rojo.
+- El buscador inicia vacío y conserva `Ej: Lightning Bolt` como placeholder.
+- Próximo paso previsto: autocompletado de nombres de cartas usando Scryfall.

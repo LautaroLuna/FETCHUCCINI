@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.13">
+  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.15">
 </head>
 <body>
   <main class="shell">
@@ -23,18 +23,30 @@
 
     <section class="search-panel panel-elevated">
       <form id="search-form">
-        <input id="query" name="q" value="Lightning Bolt" autocomplete="off" placeholder="Ej: Lightning Bolt" required>
+        <input id="query" name="q" autocomplete="off" placeholder="Ej: Lightning Bolt" required>
         <button class="search-button" type="submit">Buscar</button>
       </form>
       <div class="store-grid" id="stores">
-        <label><input type="checkbox" value="pirulo" checked> Pirulo</label>
-        <label><input type="checkbox" value="mercadia" checked> Mercadia</label>
+        <label class="{% if 'pirulo' in disabled_store_keys %}store-option-disabled{% endif %}">
+          <input type="checkbox" value="pirulo" {% if 'pirulo' in disabled_store_keys %}disabled{% else %}checked{% endif %}>
+          Pirulo{% if 'pirulo' in disabled_store_keys %}<span class="store-option-note">No disponible online</span>{% endif %}
+        </label>
+        <label class="{% if 'mercadia' in disabled_store_keys %}store-option-disabled{% endif %}">
+          <input type="checkbox" value="mercadia" {% if 'mercadia' in disabled_store_keys %}disabled{% else %}checked{% endif %}>
+          Mercadia{% if 'mercadia' in disabled_store_keys %}<span class="store-option-note">No disponible online</span>{% endif %}
+        </label>
         <label><input type="checkbox" value="magic_lair" checked> Magic Lair</label>
         <label><input type="checkbox" value="batikueva" checked> La Batikueva</label>
         <label><input type="checkbox" value="magicdealers" checked> MagicDealers</label>
         <label><input type="checkbox" value="la_workshop" checked> La Workshop</label>
         <label><input type="checkbox" value="starcitygames" checked> StarCityGames</label>
       </div>
+      {% if disabled_store_count %}
+      <div class="online-availability-note">
+        <strong>{{ enabled_store_count }} tiendas disponibles online.</strong>
+        <span>Pirulo y Mercadia no aceptan actualmente consultas desde servidores públicos, por eso no se consultan para evitar demoras y errores.</span>
+      </div>
+      {% endif %}
     </section>
 
     <section id="status" class="status panel-elevated">Listo para buscar.</section>
@@ -54,7 +66,9 @@
         <label>Ordenar precio
           <button id="price-sort" class="sort-button" type="button" data-order="asc" aria-label="Ordenar precio de menor a mayor">Menor → Mayor</button>
         </label>
-        <label class="toggle"><input id="stock-filter" type="checkbox" checked> Solo con stock</label>
+        <div class="stock-policy" title="Fetchuccini descarta automáticamente las publicaciones sin stock">
+          <span class="stock-policy-dot"></span> Solo resultados con stock
+        </div>
       </div>
       <div class="view-switch" id="view-switch" aria-label="Cambiar vista">
         <button type="button" class="view-button active" data-view="table">Tabla</button>
@@ -120,6 +134,6 @@
     </div>
   </div>
 
-  <script src="{% static 'searchapp/app.js' %}?v=0.13"></script>
+  <script src="{% static 'searchapp/app.js' %}?v=0.15"></script>
 </body>
 </html>

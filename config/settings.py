@@ -7,13 +7,26 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # a generated SECRET_KEY through environment variables.
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
 
-_default_debug = "False" if os.environ.get("RENDER") else "True"
+is_render = bool(os.environ.get("RENDER"))
+is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT_NAME") or os.environ.get("RAILWAY_SERVICE_ID"))
+
+_default_debug = "False" if (is_render or is_railway) else "True"
 DEBUG = os.environ.get("DEBUG", _default_debug).strip().lower() in {"1", "true", "yes", "on"}
 
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
+
 render_host = (os.environ.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
 if render_host:
     ALLOWED_HOSTS.append(render_host)
+
+railway_host = (os.environ.get("RAILWAY_PUBLIC_DOMAIN") or "").strip()
+if railway_host:
+    ALLOWED_HOSTS.append(railway_host)
+
+# Railway health checks use this hostname when probing the service.
+if is_railway and "healthcheck.railway.app" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("healthcheck.railway.app")
+
 for host in (os.environ.get("ALLOWED_HOSTS") or "").split(","):
     host = host.strip()
     if host and host not in ALLOWED_HOSTS:
@@ -22,10 +35,22 @@ for host in (os.environ.get("ALLOWED_HOSTS") or "").split(","):
 CSRF_TRUSTED_ORIGINS = []
 if render_host:
     CSRF_TRUSTED_ORIGINS.append(f"https://{render_host}")
+if railway_host:
+    CSRF_TRUSTED_ORIGINS.append(f"https://{railway_host}")
 for origin in (os.environ.get("CSRF_TRUSTED_ORIGINS") or "").split(","):
     origin = origin.strip()
     if origin:
         CSRF_TRUSTED_ORIGINS.append(origin)
+
+# Some stores reject requests coming from public datacenter IPs.
+# Keep them enabled locally, but skip them by default on Render/Railway so the
+# public app stays fast and does not retry requests that are known to fail.
+_default_disabled_stores = "pirulo,mercadia" if (is_render or is_railway) else ""
+FETCHUCCINI_DISABLED_STORES = tuple(
+    store.strip()
+    for store in os.environ.get("FETCHUCCINI_DISABLED_STORES", _default_disabled_stores).split(",")
+    if store.strip()
+)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -99,7 +124,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Render Free has an ephemeral filesystem. /tmp is appropriate for the short
 # cache used by Fetchuccini; local development keeps the cache in the project.
-_default_cache = "/tmp/fetchuccini-cache" if os.environ.get("RENDER") else str(BASE_DIR / ".cache" / "fetchuccini")
+_default_cache = "/tmp/fetchuccini-cache" if (is_render or is_railway) else str(BASE_DIR / ".cache" / "fetchuccini")
 CACHE_DIR = Path(os.environ.get("FETCHUCCINI_CACHE_DIR", _default_cache))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 

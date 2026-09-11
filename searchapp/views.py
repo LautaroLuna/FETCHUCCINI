@@ -1,6 +1,7 @@
 import hashlib
 import time
 
+from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -18,8 +19,29 @@ def health(request):
     return JsonResponse({"ok": True, "service": "fetchuccini"})
 
 
+def _disabled_store_keys():
+    return set(getattr(settings, "FETCHUCCINI_DISABLED_STORES", ()))
+
+
+def _is_in_stock_result(row):
+    if not row.get("available"):
+        return False
+    stock = row.get("stock")
+    if stock is None:
+        return True
+    try:
+        return int(stock) > 0
+    except (TypeError, ValueError):
+        return True
+
+
 def index(request):
-    return render(request, "searchapp/index.html")
+    disabled = _disabled_store_keys()
+    return render(request, "searchapp/index.html", {
+        "disabled_store_keys": disabled,
+        "disabled_store_count": len(disabled),
+        "enabled_store_count": max(0, 7 - len(disabled)),
+    })
 
 
 def _validate_query(request):
@@ -36,13 +58,17 @@ def _selected_store_keys(request, aggregator):
     requested = [s.strip() for s in store_param.split(",") if s.strip()]
     if not requested:
         requested = list(aggregator.adapter_classes)
-    return [key for key in requested if key in aggregator.adapter_classes]
+    disabled = _disabled_store_keys()
+    return [
+        key for key in requested
+        if key in aggregator.adapter_classes and key not in disabled
+    ]
 
 
 def _store_cache_keys(query: str, store_key: str):
     raw = f"{query.casefold()}|{store_key}".encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    return f"store-search:fresh:{digest}", f"store-search:stale:{digest}"
+    return f"store-search:v15:fresh:{digest}", f"store-search:v15:stale:{digest}"
 
 
 def _age_seconds(snapshot):
@@ -53,11 +79,18 @@ def _age_seconds(snapshot):
 
 
 def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
+    results = [
+        row for row in snapshot.get("results", [])
+        if _is_in_stock_result(row)
+    ]
+    store_info = dict(snapshot.get("store", {}))
+    store_info["count"] = len(results)
+
     data = {
         "query": snapshot["query"],
         "store_key": snapshot["store_key"],
-        "results": snapshot.get("results", []),
-        "store": dict(snapshot.get("store", {})),
+        "results": results,
+        "store": store_info,
         "cached": True,
         "fresh": bool(fresh),
         "stale": bool(stale),
@@ -82,6 +115,26 @@ def search_store_api(request):
     aggregator = SearchAggregator()
     if store_key not in aggregator.adapter_classes:
         return JsonResponse({"error": "Tienda inválida."}, status=400)
+
+    if store_key in _disabled_store_keys():
+        adapter_name = aggregator.adapter_classes[store_key].name
+        return JsonResponse({
+            "query": query,
+            "store_key": store_key,
+            "results": [],
+            "store": {
+                "store": adapter_name,
+                "count": 0,
+                "elapsed_ms": 0,
+                "error": None,
+            },
+            "cached": False,
+            "fresh": False,
+            "stale": False,
+            "age_seconds": 0,
+            "unavailable": True,
+            "message": "Temporalmente no disponible en la versión online.",
+        })
 
     fresh_key, stale_key = _store_cache_keys(query, store_key)
     fresh = cache.get(fresh_key)

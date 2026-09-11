@@ -10,7 +10,6 @@ const filters = document.querySelector('#filters');
 const storeFilter = document.querySelector('#store-filter');
 const currencyFilter = document.querySelector('#currency-filter');
 const conditionFilter = document.querySelector('#condition-filter');
-const stockFilter = document.querySelector('#stock-filter');
 const priceSort = document.querySelector('#price-sort');
 const viewButtons = [...document.querySelectorAll('.view-button')];
 const modal = document.querySelector('#image-modal');
@@ -115,7 +114,8 @@ function conditionClass(value){
   // Chequear estos antes de "jugada" para no clasificar "Muy Jugada" como SP.
   if(
     t.includes('heavily-played') || t === 'hp' ||
-    t.includes('muy-jugada') || t.includes('muy-jugado')
+    t.includes('muy-jugada') || t.includes('muy-jugado') ||
+    t.includes('muy-usada') || t.includes('muy-usado')
   ) return 'cond-heavily-played';
 
   if(
@@ -277,11 +277,10 @@ function render(){
   const store=storeFilter.value;
   const cur=currencyFilter.value;
   const cond=conditionFilter.value;
-  const only=stockFilter.checked;
   const order=priceSort.dataset.order||'asc';
 
   visibleRows=rows
-    .filter(r=>(!store||r.store===store)&&(!cur||r.currency===cur)&&(!cond||r.condition===cond)&&(!only||r.available))
+    .filter(r=>(!store||r.store===store)&&(!cur||r.currency===cur)&&(!cond||r.condition===cond))
     .slice()
     .sort((a,b)=>comparePrice(a,b,order));
 
@@ -291,7 +290,7 @@ function render(){
   updateOverallStatus();
 }
 
-[storeFilter,currencyFilter,conditionFilter,stockFilter].forEach(x=>x.addEventListener('change',render));
+[storeFilter,currencyFilter,conditionFilter].forEach(x=>x.addEventListener('change',render));
 viewButtons.forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.view)));
 
 priceSort.addEventListener('click',()=>{
@@ -328,7 +327,7 @@ function isStoreFinished(state){
 function friendlyStoreError(error){
   const text = String(error || '');
   const low = text.toLowerCase();
-  if(low.includes('403') || low.includes('forbidden')) return 'bloqueada desde hosting';
+  if(low.includes('403') || low.includes('forbidden')) return 'no disponible online';
   if(low.includes('429') || low.includes('too many requests')) return 'límite de consultas';
   if(low.includes('timeout') || low.includes('timed out')) return 'demoró demasiado';
   if(low.includes('ssl') || low.includes('eof')) return 'conexión inestable';

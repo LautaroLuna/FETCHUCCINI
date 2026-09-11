@@ -30,6 +30,15 @@ class SearchAggregator:
         adapter = adapter_class()
         try:
             rows = adapter.search(card_name)
+
+            # Fetchuccini only exposes purchasable listings. A listing with
+            # available=False or an explicit stock of 0 is discarded here so
+            # every endpoint/cache/frontend receives stock-only results.
+            rows = [
+                row for row in rows
+                if row.available and (row.stock is None or row.stock > 0)
+            ]
+
             elapsed = int((perf_counter() - started) * 1000)
             return rows, StoreRun(adapter.name, len(rows), elapsed)
         except Exception as exc:
