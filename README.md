@@ -199,3 +199,10 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Mercadia Bridge se ejecuta cada 30 minutos.
 - Las búsquedas activas de Mercadia se resincronizan automáticamente cada 30 minutos.
 - La interfaz muestra la antigüedad de la última sincronización de Mercadia.
+
+
+## v0.28
+
+- MagicDealers reduce drásticamente su presupuesto de retries y corta paginación irrelevante.
+- Cache fresca de MagicDealers ampliada a 30 minutos.
+- El Bridge de Mercadia de v0.27 se mantiene sin cambios.

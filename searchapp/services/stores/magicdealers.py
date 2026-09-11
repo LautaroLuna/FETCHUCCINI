@@ -1,6 +1,5 @@
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
 import requests
@@ -8,7 +7,6 @@ from bs4 import BeautifulSoup
 
 from .base import StoreAdapter
 from ..models import Listing
-from ..http import HttpClient
 from ..utils import as_int, exactish_card_name, normalize_space, parse_ars
 
 
@@ -26,9 +24,10 @@ class MagicDealersAdapter(StoreAdapter):
     # connection before giving up.
     DETAIL_WORKERS = 1
     DETAIL_DELAY_SECONDS = 0.35
-    SEARCH_ATTEMPTS = 5
-    SEARCH_TIMEOUT_SECONDS = 18
-    SEARCH_BACKOFF_SECONDS = 0.9
+    SEARCH_ATTEMPTS = 2
+    SEARCH_TIMEOUT_SECONDS = 9
+    SEARCH_BACKOFF_SECONDS = 0.35
+    MAX_SEARCH_PAGES = 8
 
     SEARCH_HEADERS = {
         "User-Agent": (
@@ -43,37 +42,38 @@ class MagicDealersAdapter(StoreAdapter):
     }
 
     def _search_get(self, url: str, **kwargs):
-        """Fetch a MagicDealers search page defensively.
+        """Fetch a MagicDealers search page with a small, bounded retry budget.
 
-        The store sometimes terminates HTTPS connections with
-        SSL: UNEXPECTED_EOF_WHILE_READING. urllib3 already retries a couple of
-        times globally, but for this specific origin we also retry with a fresh
-        Session/connection and a short progressive backoff.
+        v0.27 accidentally stacked two retry layers: HttpClient/urllib3 could
+        retry a request three times and this method could repeat that whole
+        sequence five times. On a flaky TLS/503 response that made a single
+        MagicDealers search take 40-60 seconds.
+
+        Here we intentionally bypass HttpClient's automatic retry layer for
+        this origin and allow at most two fresh connections. Partial pagination
+        results are still preserved by ``search`` below.
         """
         last_error = None
+        params = kwargs.pop("params", None)
+        extra_headers = kwargs.pop("headers", {}) or {}
+        headers = dict(self.SEARCH_HEADERS)
+        headers.update(extra_headers)
+
         for attempt in range(1, self.SEARCH_ATTEMPTS + 1):
             try:
-                headers = dict(self.SEARCH_HEADERS)
-                headers.update(kwargs.pop("headers", {}) or {})
-                return self.http.get(
+                response = requests.get(
                     url,
-                    timeout=self.SEARCH_TIMEOUT_SECONDS,
+                    params=params,
                     headers=headers,
+                    timeout=self.SEARCH_TIMEOUT_SECONDS,
                     **kwargs,
                 )
+                response.raise_for_status()
+                return response
             except requests.RequestException as exc:
                 last_error = exc
-                if attempt >= self.SEARCH_ATTEMPTS:
-                    break
-
-                # Throw away the old connection pool. This is important for the
-                # intermittent TLS EOF issue seen on this store.
-                try:
-                    self.http.session.close()
-                except Exception:
-                    pass
-                self.http = HttpClient(timeout=self.SEARCH_TIMEOUT_SECONDS)
-                time.sleep(self.SEARCH_BACKOFF_SECONDS * attempt)
+                if attempt < self.SEARCH_ATTEMPTS:
+                    time.sleep(self.SEARCH_BACKOFF_SECONDS * attempt)
 
         raise last_error
 
@@ -216,7 +216,7 @@ class MagicDealersAdapter(StoreAdapter):
         rows = []
         page = 1
         next_url = None
-        while page <= 30:
+        while page <= self.MAX_SEARCH_PAGES:
             try:
                 if next_url:
                     html = self._search_get(urljoin(self.BASE, next_url)).text
@@ -233,6 +233,11 @@ class MagicDealersAdapter(StoreAdapter):
                 raise
 
             found, next_url = self._parse_page(html, card_name)
+            # CrystalCommerce sorts search results by relevance. Once a page has
+            # no card whose name starts with the requested prefix, continuing
+            # through the remaining result pages only adds latency.
+            if not found:
+                break
             rows.extend(found)
             if not next_url:
                 break
@@ -241,38 +246,34 @@ class MagicDealersAdapter(StoreAdapter):
         if not rows:
             return []
 
-        # Preserve partial results even when one or more detail pages fail.
-        listings = [None] * len(rows)
-        with ThreadPoolExecutor(max_workers=self.DETAIL_WORKERS) as pool:
-            future_map = {
-                pool.submit(self._build_listing, card_name, row): idx
-                for idx, row in enumerate(rows)
-            }
-            for future in as_completed(future_map):
-                idx = future_map[future]
-                try:
-                    listings[idx] = future.result()
-                except Exception:
-                    # Last-resort fallback: return the useful search-page data.
-                    row = rows[idx]
-                    title = row["title"]
-                    display_name = title.split(" - ", 1)[0].strip() or card_name
-                    listings[idx] = Listing(
-                        store=self.name,
-                        card_name=display_name,
-                        set_name=row.get("set_name"),
-                        language=row["language"],
-                        condition=row["condition"],
-                        finish="Foil" if "foil" in title.casefold() else None,
-                        style=title.split(" - ", 1)[1] if " - " in title else None,
-                        price=row["price"],
-                        currency="ARS",
-                        stock=row["stock"],
-                        available=(row["stock"] or 0) > 0 if row["stock"] is not None else None,
-                        url=row["url"],
-                        image_url=row.get("image_url"),
-                        product_id=row["product_id"],
-                        variant_id=row["variant_id"],
-                    )
+        # _build_listing no longer performs network I/O, so a thread pool only
+        # adds overhead. Build the normalized rows directly and keep stock-only
+        # publications, which is Fetchuccini's global policy.
+        listings = []
+        for row in rows:
+            try:
+                item = self._build_listing(card_name, row)
+            except Exception:
+                title = row["title"]
+                display_name = title.split(" - ", 1)[0].strip() or card_name
+                item = Listing(
+                    store=self.name,
+                    card_name=display_name,
+                    set_name=row.get("set_name"),
+                    language=row["language"],
+                    condition=row["condition"],
+                    finish="Foil" if "foil" in title.casefold() else None,
+                    style=title.split(" - ", 1)[1] if " - " in title else None,
+                    price=row["price"],
+                    currency="ARS",
+                    stock=row["stock"],
+                    available=(row["stock"] or 0) > 0 if row["stock"] is not None else None,
+                    url=row["url"],
+                    image_url=row.get("image_url"),
+                    product_id=row["product_id"],
+                    variant_id=row["variant_id"],
+                )
+            if item.available and (item.stock is None or item.stock > 0):
+                listings.append(item)
 
-        return [item for item in listings if item is not None]
+        return listings

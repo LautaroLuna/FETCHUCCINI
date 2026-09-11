@@ -15,6 +15,7 @@ from .services.scryfall import ScryfallService
 
 
 FRESH_CACHE_SECONDS = 5 * 60
+MAGICDEALERS_FRESH_CACHE_SECONDS = 30 * 60
 STALE_CACHE_SECONDS = 24 * 60 * 60
 AUTOCOMPLETE_CACHE_SECONDS = 60 * 60
 
@@ -427,7 +428,8 @@ def search_store_api(request):
         },
         "cached_at": time.time(),
     }
-    cache.set(fresh_key, snapshot, FRESH_CACHE_SECONDS)
+    fresh_seconds = MAGICDEALERS_FRESH_CACHE_SECONDS if store_key == "magicdealers" else FRESH_CACHE_SECONDS
+    cache.set(fresh_key, snapshot, fresh_seconds)
     cache.set(stale_key, snapshot, STALE_CACHE_SECONDS)
 
     return JsonResponse({
