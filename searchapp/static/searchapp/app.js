@@ -83,7 +83,7 @@ function chooseAutocomplete(index){
 }
 
 function renderAutocomplete(items){
-  autocompleteItems = items.slice(0,12);
+  autocompleteItems = items.slice(0,8);
   autocompleteIndex = -1;
   if(!autocompleteItems.length){ closeAutocomplete(); return; }
   autocompleteEl.innerHTML = autocompleteItems.map((name,index)=>`
