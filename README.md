@@ -1,4 +1,4 @@
-# Fetchuccini — MVP 0.16
+# Fetchuccini — MVP 0.18
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 
@@ -148,3 +148,10 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Heavily Played / Muy Jugada se muestra en rojo.
 - El buscador inicia vacío y conserva `Ej: Lightning Bolt` como placeholder.
 - Próximo paso previsto: autocompletado de nombres de cartas usando Scryfall.
+
+
+## v0.18
+
+- Vista Tarjetas como predeterminada para usuarios nuevos.
+- La búsqueda acepta prefijos: `lightning` puede devolver todas las cartas cuyo nombre comienza con Lightning.
+- Se conserva la opción de cambiar a Tabla.

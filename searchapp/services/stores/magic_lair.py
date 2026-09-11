@@ -55,9 +55,10 @@ class MagicLairAdapter(StoreAdapter):
                     image = urljoin(self.BASE, image)
 
             style = None
-            style_match = re.search(r"\(([^)]+)\)", title)
+            style_match = re.search(r"\(([^)]+)\)\s*$", title)
             if style_match:
                 style = normalize_space(style_match.group(1))
+            display_name = re.sub(r"\s+\([^)]+\)\s*$", "", title).strip() or title
 
             chips = card.select(".productChip[data-variantid]")
             for chip in chips:
@@ -81,7 +82,7 @@ class MagicLairAdapter(StoreAdapter):
 
                 out.append(Listing(
                     store=self.name,
-                    card_name=card_name,
+                    card_name=display_name,
                     set_name=set_name,
                     collector_number=None,
                     language=None,
@@ -109,7 +110,7 @@ class MagicLairAdapter(StoreAdapter):
             try:
                 response = self.http.get(
                     f"{self.BASE}/search",
-                    params={"q": f'"{card_name}"', "type": "product", "page": page},
+                    params={"q": card_name, "type": "product", "page": page},
                 )
             except requests.RequestException:
                 # If a later page is throttled, keep the useful results already

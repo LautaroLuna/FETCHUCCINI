@@ -191,10 +191,11 @@ class MagicDealersAdapter(StoreAdapter):
         details = {}
         title = row["title"]
         style = title.split(" - ", 1)[1] if " - " in title else None
+        display_name = title.split(" - ", 1)[0].strip() or card_name
         inferred_finish = "Foil" if "foil" in title.casefold() else None
         return Listing(
             store=self.name,
-            card_name=card_name,
+            card_name=display_name,
             set_name=details.get("Set Name") or row.get("set_name"),
             collector_number=details.get("Card Number"),
             language=row["language"],
@@ -255,9 +256,10 @@ class MagicDealersAdapter(StoreAdapter):
                     # Last-resort fallback: return the useful search-page data.
                     row = rows[idx]
                     title = row["title"]
+                    display_name = title.split(" - ", 1)[0].strip() or card_name
                     listings[idx] = Listing(
                         store=self.name,
-                        card_name=card_name,
+                        card_name=display_name,
                         set_name=row.get("set_name"),
                         language=row["language"],
                         condition=row["condition"],

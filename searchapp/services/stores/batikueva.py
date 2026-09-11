@@ -140,9 +140,10 @@ class BatikuevaAdapter(StoreAdapter):
                 # result, which made public searches much slower.
                 set_name, collector = None, None
                 style = None
-                m = re.search(r"\(([^)]+)\)", title or "")
+                m = re.search(r"\(([^)]+)\)\s*$", title or "")
                 if m:
                     style = m.group(1)
+                display_name = re.sub(r"\s+\([^)]+\)\s*$", "", title or "").strip() or card_name
                 title_low = (title or "").casefold()
                 finish = "Foil Etched" if "foil etched" in title_low else ("Foil" if "foil" in title_low else None)
 
@@ -151,7 +152,7 @@ class BatikuevaAdapter(StoreAdapter):
                     price = variant.get("price_number")
                     out.append(Listing(
                         store=self.name,
-                        card_name=card_name,
+                        card_name=display_name,
                         set_name=set_name,
                         collector_number=collector,
                         language=variant.get("option1"),

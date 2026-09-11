@@ -46,9 +46,15 @@ def normalize_space(text: str | None) -> str:
 
 
 def exactish_card_name(candidate: str | None, query: str) -> bool:
+    """Match card names by prefix, case-insensitively.
+
+    Fetchuccini treats the search box as a prefix search: "lightning" may
+    return Lightning Bolt, Lightning Axe, Lightning Helix, etc. Exact searches
+    still work because an exact name is naturally also a prefix of itself.
+    """
     c = normalize_space(candidate).casefold()
     q = normalize_space(query).casefold()
-    return c == q or c.startswith(q + " (") or c.startswith(q + " - ") or c.startswith(q + " [")
+    return bool(c and q and c.startswith(q))
 
 
 def json_attr(value: str | None):

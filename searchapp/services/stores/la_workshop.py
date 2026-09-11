@@ -1,7 +1,7 @@
 from decimal import Decimal
 from .base import StoreAdapter
 from ..models import Listing
-from ..utils import as_int
+from ..utils import as_int, exactish_card_name
 
 
 class LaWorkshopAdapter(StoreAdapter):
@@ -22,6 +22,8 @@ class LaWorkshopAdapter(StoreAdapter):
             products = data.get("products") or data.get("results") or []
             for product in products:
                 name = product.get("name") or product.get("card_name") or card_name
+                if not exactish_card_name(name, card_name):
+                    continue
                 set_name = product.get("edition") or product.get("edition_name") or product.get("set_name")
                 set_code = product.get("edition_code") or product.get("set_code")
                 collector = product.get("collector_number")

@@ -2,7 +2,7 @@ from decimal import Decimal
 from urllib.parse import urljoin
 from .base import StoreAdapter
 from ..models import Listing
-from ..utils import as_int, first
+from ..utils import as_int, exactish_card_name, first
 
 
 class StarCityGamesAdapter(StoreAdapter):
@@ -13,8 +13,8 @@ class StarCityGamesAdapter(StoreAdapter):
 
     def _payload(self, card_name: str, page: int = 1) -> dict:
         return {
-            "Keyword": "",
-            "FacetSelections": {"item_display_name": [card_name]},
+            "Keyword": card_name,
+            "FacetSelections": {},
             "MaxPerPage": 96,
             "PageNo": page,
             "Variant": {"MaxPerPage": 32},
@@ -28,6 +28,8 @@ class StarCityGamesAdapter(StoreAdapter):
             for result in data.get("Results") or []:
                 doc = result.get("Document") or {}
                 name = first(doc.get("card_name")) or first(doc.get("item_display_name")) or card_name
+                if not exactish_card_name(name, card_name):
+                    continue
                 set_name = first(doc.get("set")) or first(doc.get("filter_set"))
                 collector = first(doc.get("collector_number"))
                 finish = first(doc.get("mtg_finish")) or first(doc.get("finish"))

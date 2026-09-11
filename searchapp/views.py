@@ -71,7 +71,7 @@ def _selected_store_keys(request, aggregator):
 def _store_cache_keys(query: str, store_key: str):
     raw = f"{query.casefold()}|{store_key}".encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    return f"store-search:v15:fresh:{digest}", f"store-search:v15:stale:{digest}"
+    return f"store-search:v18:fresh:{digest}", f"store-search:v18:stale:{digest}"
 
 
 def _age_seconds(snapshot):

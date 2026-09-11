@@ -26,7 +26,7 @@ const modalClose = document.querySelector('#modal-close');
 
 let rows = [];
 let visibleRows = [];
-let currentView = localStorage.getItem('fetchuccini:view') || 'table';
+let currentView = localStorage.getItem('fetchuccini:view') || 'cards';
 let activeStoreKeys = [];
 let storeRows = new Map();
 let storeStates = new Map();
