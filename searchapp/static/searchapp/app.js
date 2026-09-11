@@ -8,6 +8,8 @@ const table = document.querySelector('#results-table');
 const body = document.querySelector('#results-body');
 const cardsGrid = document.querySelector('#results-cards');
 const filters = document.querySelector('#filters');
+const pagination = document.querySelector('#pagination');
+const resultsWrap = document.querySelector('.results-wrap');
 const storeFilter = document.querySelector('#store-filter');
 const currencyFilter = document.querySelector('#currency-filter');
 const conditionFilter = document.querySelector('#condition-filter');
@@ -26,6 +28,9 @@ const modalClose = document.querySelector('#modal-close');
 
 let rows = [];
 let visibleRows = [];
+let currentPageRows = [];
+let currentPage = 1;
+const PAGE_SIZE = 24;
 let currentView = localStorage.getItem('fetchuccini:view') || 'cards';
 let activeStoreKeys = [];
 let storeRows = new Map();
@@ -361,7 +366,7 @@ function setView(view){
 }
 
 function openModal(index){
-  const row = visibleRows[index];
+  const row = currentPageRows[index];
   if(!row) return;
   modalImage.src = row.image_url || '';
   modalImage.alt = row.card_name || 'Carta';
@@ -389,6 +394,42 @@ function closeModal(){
   document.body.style.overflow = '';
 }
 
+function paginationItems(totalPages, page){
+  if(totalPages <= 7) return Array.from({length:totalPages}, (_,i)=>i+1);
+  const items = new Set([1,totalPages,page-1,page,page+1]);
+  const pages = [...items].filter(n=>n>=1&&n<=totalPages).sort((a,b)=>a-b);
+  const result=[];
+  let previous=0;
+  for(const n of pages){
+    if(previous && n-previous>1) result.push('…');
+    result.push(n);
+    previous=n;
+  }
+  return result;
+}
+
+function renderPagination(totalResults){
+  const totalPages = Math.max(1, Math.ceil(totalResults / PAGE_SIZE));
+  currentPage = Math.max(1, Math.min(currentPage, totalPages));
+
+  if(totalResults <= PAGE_SIZE){
+    pagination.innerHTML='';
+    pagination.classList.add('hidden');
+    return;
+  }
+
+  const items = paginationItems(totalPages,currentPage);
+  pagination.innerHTML = `
+    <span class="pagination-summary">Página ${currentPage} de ${totalPages} · ${totalResults} resultados</span>
+    <button type="button" class="page-button" data-page="${currentPage-1}" ${currentPage===1?'disabled':''}>‹</button>
+    ${items.map(item=>item==='…'
+      ? '<span class="page-ellipsis">…</span>'
+      : `<button type="button" class="page-button ${item===currentPage?'active':''}" data-page="${item}">${item}</button>`
+    ).join('')}
+    <button type="button" class="page-button" data-page="${currentPage+1}" ${currentPage===totalPages?'disabled':''}>›</button>`;
+  pagination.classList.remove('hidden');
+}
+
 function render(){
   const store=storeFilter.value;
   const cur=currencyFilter.value;
@@ -400,20 +441,34 @@ function render(){
     .slice()
     .sort((a,b)=>comparePrice(a,b,order));
 
-  renderTable(visibleRows);
-  renderCards(visibleRows);
+  const totalPages=Math.max(1,Math.ceil(visibleRows.length/PAGE_SIZE));
+  currentPage=Math.max(1,Math.min(currentPage,totalPages));
+  const start=(currentPage-1)*PAGE_SIZE;
+  currentPageRows=visibleRows.slice(start,start+PAGE_SIZE);
+
+  renderTable(currentPageRows);
+  renderCards(currentPageRows);
+  renderPagination(visibleRows.length);
   setView(currentView);
   updateOverallStatus();
 }
 
-[storeFilter,currencyFilter,conditionFilter].forEach(x=>x.addEventListener('change',render));
+[storeFilter,currencyFilter,conditionFilter].forEach(x=>x.addEventListener('change',()=>{currentPage=1;render();}));
 viewButtons.forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.view)));
+pagination.addEventListener('click',event=>{
+  const button=event.target.closest('.page-button[data-page]');
+  if(!button||button.disabled)return;
+  currentPage=Number(button.dataset.page)||1;
+  render();
+  resultsWrap.scrollIntoView({behavior:'smooth',block:'start'});
+});
 
 priceSort.addEventListener('click',()=>{
   const next=priceSort.dataset.order==='asc'?'desc':'asc';
   priceSort.dataset.order=next;
   priceSort.textContent=next==='asc'?'Menor → Mayor':'Mayor → Menor';
   priceSort.setAttribute('aria-label',next==='asc'?'Ordenar precio de menor a mayor':'Ordenar precio de mayor a menor');
+  currentPage=1;
   render();
 });
 
@@ -612,6 +667,8 @@ form.addEventListener('submit', async e=>{
   storeStates = new Map(stores.map(key => [key, {status:'loading', label:STORE_LABELS[key] || key, count:0}]));
   rows = [];
   visibleRows = [];
+  currentPageRows = [];
+  currentPage = 1;
 
   filters.classList.remove('hidden');
   table.classList.toggle('hidden', currentView !== 'table');

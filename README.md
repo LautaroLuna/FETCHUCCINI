@@ -1,4 +1,4 @@
-# Fetchuccini — MVP 0.19
+# Fetchuccini — MVP 0.18
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 
@@ -157,9 +157,9 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Se conserva la opción de cambiar a Tabla.
 
 
-## v0.19
+## v0.20
 
-- Nueva paleta visual inspirada en la forja enana / martillo al rojo vivo: fondos más oscuros, acentos ember rojo-naranja y highlights cálidos.
-- Se agregó favicon local de Fetchuccini (`fetchuccini-forge-icon.png`) para que la pestaña del navegador y buscadores muestren el ícono del martillo sobre el yunque.
-- Se añadieron metadatos básicos (`theme-color`, Open Graph y Twitter) usando la misma imagen de marca.
-- Versionado estático actualizado a `0.19` para forzar recarga de CSS/JS en producción.
+- La paleta forge se oscureció: fondo más carbón/negro y rojos menos brillantes, manteniendo naranja fuego en acciones importantes.
+- Se agregó paginación frontend de 24 publicaciones por página después de aplicar filtros y ordenamiento.
+- La paginación funciona tanto en Tarjetas como en Tabla, conserva filtros y permite navegar con anterior/siguiente y números de página.
+- El modal de carta sigue apuntando al resultado correcto dentro de cada página.
