@@ -1,4 +1,4 @@
-# Fetchuccini — MVP 0.120
+# Fetchuccini — MVP 0.16
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 

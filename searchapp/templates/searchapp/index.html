@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.15">
+  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.16">
 </head>
 <body>
   <main class="shell">
@@ -23,7 +23,20 @@
 
     <section class="search-panel panel-elevated">
       <form id="search-form">
-        <input id="query" name="q" autocomplete="off" placeholder="Ej: Lightning Bolt" required>
+        <div class="search-input-wrap">
+          <input
+            id="query"
+            name="q"
+            autocomplete="off"
+            placeholder="Ej: Lightning Bolt"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="autocomplete"
+            aria-expanded="false"
+            required
+          >
+          <div id="autocomplete" class="autocomplete hidden" role="listbox" aria-label="Sugerencias de cartas"></div>
+        </div>
         <button class="search-button" type="submit">Buscar</button>
       </form>
       <div class="store-grid" id="stores">
@@ -134,6 +147,6 @@
     </div>
   </div>
 
-  <script src="{% static 'searchapp/app.js' %}?v=0.15"></script>
+  <script src="{% static 'searchapp/app.js' %}?v=0.16"></script>
 </body>
 </html>

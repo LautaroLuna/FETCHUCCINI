@@ -1,6 +1,7 @@
 
 const form = document.querySelector('#search-form');
 const q = document.querySelector('#query');
+const autocompleteEl = document.querySelector('#autocomplete');
 const statusEl = document.querySelector('#status');
 const storeStatus = document.querySelector('#store-status');
 const table = document.querySelector('#results-table');
@@ -30,6 +31,11 @@ let activeStoreKeys = [];
 let storeRows = new Map();
 let storeStates = new Map();
 let searchGeneration = 0;
+let autocompleteTimer = null;
+let autocompleteController = null;
+let autocompleteItems = [];
+let autocompleteIndex = -1;
+let autocompleteGeneration = 0;
 
 const STORE_LABELS = {
   pirulo: 'Pirulo',
@@ -40,6 +46,116 @@ const STORE_LABELS = {
   la_workshop: 'La Workshop',
   starcitygames: 'StarCityGames',
 };
+
+function closeAutocomplete(){
+  autocompleteItems = [];
+  autocompleteIndex = -1;
+  autocompleteEl.innerHTML = '';
+  autocompleteEl.classList.add('hidden');
+  q.setAttribute('aria-expanded','false');
+  q.removeAttribute('aria-activedescendant');
+}
+
+function setAutocompleteIndex(index){
+  const options = [...autocompleteEl.querySelectorAll('.autocomplete-option')];
+  if(!options.length){ autocompleteIndex = -1; return; }
+  autocompleteIndex = Math.max(-1, Math.min(index, options.length - 1));
+  options.forEach((option,i)=>{
+    const active = i === autocompleteIndex;
+    option.classList.toggle('active', active);
+    option.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  if(autocompleteIndex >= 0){
+    const active = options[autocompleteIndex];
+    q.setAttribute('aria-activedescendant', active.id);
+    active.scrollIntoView({block:'nearest'});
+  }else{
+    q.removeAttribute('aria-activedescendant');
+  }
+}
+
+function chooseAutocomplete(index){
+  const value = autocompleteItems[index];
+  if(!value) return;
+  q.value = value;
+  closeAutocomplete();
+  q.focus();
+}
+
+function renderAutocomplete(items){
+  autocompleteItems = items.slice(0,12);
+  autocompleteIndex = -1;
+  if(!autocompleteItems.length){ closeAutocomplete(); return; }
+  autocompleteEl.innerHTML = autocompleteItems.map((name,index)=>`
+    <button
+      type="button"
+      id="autocomplete-option-${index}"
+      class="autocomplete-option"
+      role="option"
+      data-index="${index}"
+      aria-selected="false"
+    >
+      <span class="autocomplete-name">${esc(name)}</span>
+      <span class="autocomplete-source">Scryfall</span>
+    </button>`).join('');
+  autocompleteEl.classList.remove('hidden');
+  q.setAttribute('aria-expanded','true');
+}
+
+async function loadAutocomplete(value){
+  const query = value.trim();
+  autocompleteGeneration += 1;
+  const generation = autocompleteGeneration;
+
+  if(autocompleteController) autocompleteController.abort();
+  if(query.length < 2){ closeAutocomplete(); return; }
+
+  autocompleteController = new AbortController();
+  try{
+    const params = new URLSearchParams({q:query});
+    const response = await fetch(`/api/autocomplete/?${params}`, {signal:autocompleteController.signal});
+    if(!response.ok) throw new Error('autocomplete');
+    const data = await response.json();
+    if(generation !== autocompleteGeneration || q.value.trim() !== query) return;
+    renderAutocomplete(data.suggestions || []);
+  }catch(err){
+    if(err.name !== 'AbortError' && generation === autocompleteGeneration) closeAutocomplete();
+  }
+}
+
+q.addEventListener('input',()=>{
+  clearTimeout(autocompleteTimer);
+  const value = q.value;
+  if(value.trim().length < 2){ closeAutocomplete(); return; }
+  autocompleteTimer = setTimeout(()=>loadAutocomplete(value), 280);
+});
+
+q.addEventListener('keydown',event=>{
+  if(autocompleteEl.classList.contains('hidden')) return;
+  if(event.key === 'ArrowDown'){
+    event.preventDefault();
+    setAutocompleteIndex(autocompleteIndex + 1);
+  }else if(event.key === 'ArrowUp'){
+    event.preventDefault();
+    setAutocompleteIndex(autocompleteIndex <= 0 ? autocompleteItems.length - 1 : autocompleteIndex - 1);
+  }else if(event.key === 'Enter' && autocompleteIndex >= 0){
+    event.preventDefault();
+    chooseAutocomplete(autocompleteIndex);
+  }else if(event.key === 'Escape'){
+    closeAutocomplete();
+  }
+});
+
+autocompleteEl.addEventListener('mousedown',event=>{
+  const option = event.target.closest('.autocomplete-option');
+  if(!option) return;
+  event.preventDefault();
+  chooseAutocomplete(Number(option.dataset.index));
+});
+
+document.addEventListener('click',event=>{
+  if(!event.target.closest('.search-input-wrap')) closeAutocomplete();
+});
 
 function selectedStores(){return [...document.querySelectorAll('#stores input:checked')].map(x=>x.value)}
 function esc(v){return String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))}
@@ -483,6 +599,7 @@ async function fetchOneStore(query, key, generation){
 
 form.addEventListener('submit', async e=>{
   e.preventDefault();
+  closeAutocomplete();
   const query=q.value.trim();
   if(!query)return;
   const stores=selectedStores();

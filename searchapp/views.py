@@ -7,10 +7,13 @@ from django.http import JsonResponse
 from django.shortcuts import render
 
 from .services.aggregator import SearchAggregator
+from .services.scryfall import ScryfallService
 
 
 FRESH_CACHE_SECONDS = 5 * 60
 STALE_CACHE_SECONDS = 24 * 60 * 60
+AUTOCOMPLETE_CACHE_SECONDS = 60 * 60
+
 
 
 
@@ -99,6 +102,30 @@ def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
     if error:
         data["store"]["error"] = error
     return data
+
+
+def autocomplete_api(request):
+    """Return Scryfall card-name suggestions for the search box.
+
+    Minimum 2 characters plus a one-hour cache keeps the public Scryfall API
+    comfortably below its rate limits even when several users type at once.
+    """
+    query = (request.GET.get("q") or "").strip()
+    if len(query) < 2:
+        return JsonResponse({"query": query, "suggestions": []})
+    if len(query) > 80:
+        return JsonResponse({"query": query, "suggestions": []})
+
+    normalized = query.casefold()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    cache_key = f"autocomplete:v16:{digest}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return JsonResponse({"query": query, "suggestions": cached, "cached": True})
+
+    suggestions = ScryfallService().autocomplete(query, limit=12)
+    cache.set(cache_key, suggestions, AUTOCOMPLETE_CACHE_SECONDS)
+    return JsonResponse({"query": query, "suggestions": suggestions, "cached": False})
 
 
 def search_store_api(request):
