@@ -309,19 +309,17 @@ class PiruloAdapter(StoreAdapter):
         return out
 
     def search(self, card_name: str) -> list[Listing]:
-        # Prefer BigCommerce's own public Storefront API. This avoids depending
-        # on the separate LGS Companion host that returns 403 from some clouds.
-        graphql_error = None
+        # BigCommerce Storefront is the authoritative online path. An empty
+        # list is a perfectly valid result (the card may simply have no stock).
+        # Previously we treated [] as a reason to fall back to LGS Companion;
+        # Railway is blocked by that host, so many legitimate zero-result
+        # searches were incorrectly shown as "Pirulo: no disponible online".
         try:
-            rows = self._graphql_search(card_name)
-            if rows:
-                return rows
-        except Exception as exc:
-            graphql_error = exc
-
-        try:
-            return self._suggest_search(card_name)
-        except Exception:
-            if graphql_error:
+            return self._graphql_search(card_name)
+        except Exception as graphql_error:
+            # Only use the legacy suggestion service when GraphQL itself
+            # actually failed. Do NOT use it just because GraphQL found 0 rows.
+            try:
+                return self._suggest_search(card_name)
+            except Exception:
                 raise graphql_error
-            raise

@@ -163,3 +163,24 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Se agregó paginación frontend de 24 publicaciones por página después de aplicar filtros y ordenamiento.
 - La paginación funciona tanto en Tarjetas como en Tabla, conserva filtros y permite navegar con anterior/siguiente y números de página.
 - El modal de carta sigue apuntando al resultado correcto dentro de cada página.
+
+
+## v0.23
+
+- Pirulo y Mercadia vuelven a habilitarse en producción mediante APIs públicas de sus propias plataformas.
+- Pirulo usa BigCommerce Storefront GraphQL como ruta principal y el suggest externo solo como fallback.
+- Mercadia usa Magento GraphQL como ruta principal, MageWorx autocomplete como segundo fallback y el HTML tradicional como último recurso.
+- No se usan proxies, rotación de IPs ni credenciales privadas.
+
+
+## v0.24
+
+- Mercadia now prefers its public MageWorx autocomplete payload directly, avoiding detail-page requests whenever possible.
+- GraphQL and legacy HTML remain fallback sources.
+- Mercadia errors include a route-by-route diagnostic chain for hosted deployments.
+
+
+## v0.25
+
+- Pirulo ya considera una búsqueda GraphQL exitosa con cero publicaciones como un resultado válido; esto evita falsos errores para cartas que Pirulo no tiene en stock.
+- Mercadia detecta el 403 del hosting y falla rápido con un mensaje explícito. La tienda bloquea actualmente las rutas públicas probadas desde Railway, por lo que su recuperación requiere whitelist/API autorizada o una estrategia de sincronización desde una red permitida.

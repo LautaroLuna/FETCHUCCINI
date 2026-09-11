@@ -473,6 +473,15 @@ class MercadiaAdapter(StoreAdapter):
                 return rows
         except Exception as exc:
             errors.append(f"autocomplete: {exc}")
+            # On Railway the Mercadia origin currently returns HTTP 403 for the
+            # public autocomplete route. The same origin also rejects GraphQL
+            # and catalog pages, so retrying every route only adds delay. Keep
+            # this explicit rather than trying to bypass the site's controls.
+            if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code == 403:
+                raise RuntimeError(
+                    "Mercadia bloquea actualmente las consultas desde el servidor de Fetchuccini (HTTP 403). "
+                    "Hace falta acceso/whitelist de Mercadia o una fuente autorizada distinta."
+                ) from exc
 
         # Second choice: Magento storefront GraphQL.
         try:
