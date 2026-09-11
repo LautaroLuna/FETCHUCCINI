@@ -1,0 +1,125 @@
+{% load static %}
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fetchuccini</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.11">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">FETCHUCCINI</p>
+        <h1>Compará precio y stock en todas las tiendas</h1>
+        <p class="sub">Buscá una carta y compará en segundos precio, stock, edición, idioma, condición y acabado entre todas tus tiendas favoritas.</p>
+        <div class="hero-stores">Pirulo <span>•</span> Mercadia <span>•</span> Magic Lair <span>•</span> La Batikueva <span>•</span> MagicDealers <span>•</span> La Workshop <span>•</span> StarCityGames</div>
+      </div>
+    </header>
+
+    <section class="search-panel panel-elevated">
+      <form id="search-form">
+        <input id="query" name="q" value="Lightning Bolt" autocomplete="off" placeholder="Ej: Lightning Bolt" required>
+        <button class="search-button" type="submit">Buscar</button>
+      </form>
+      <div class="store-grid" id="stores">
+        <label><input type="checkbox" value="pirulo" checked> Pirulo</label>
+        <label><input type="checkbox" value="mercadia" checked> Mercadia</label>
+        <label><input type="checkbox" value="magic_lair" checked> Magic Lair</label>
+        <label><input type="checkbox" value="batikueva" checked> La Batikueva</label>
+        <label><input type="checkbox" value="magicdealers" checked> MagicDealers</label>
+        <label><input type="checkbox" value="la_workshop" checked> La Workshop</label>
+        <label><input type="checkbox" value="starcitygames" checked> StarCityGames</label>
+      </div>
+    </section>
+
+    <section id="status" class="status panel-elevated">Listo para buscar.</section>
+    <section id="store-status" class="store-status panel-elevated"></section>
+
+    <section class="filters sticky-toolbar hidden panel-elevated" id="filters">
+      <div class="filters-grid">
+        <label>Tienda
+          <select id="store-filter"><option value="">Todas</option></select>
+        </label>
+        <label>Moneda
+          <select id="currency-filter"><option value="">Todas</option></select>
+        </label>
+        <label>Condición
+          <select id="condition-filter"><option value="">Todas</option></select>
+        </label>
+        <label>Ordenar precio
+          <button id="price-sort" class="sort-button" type="button" data-order="asc" aria-label="Ordenar precio de menor a mayor">Menor → Mayor</button>
+        </label>
+        <label class="toggle"><input id="stock-filter" type="checkbox" checked> Solo con stock</label>
+      </div>
+      <div class="view-switch" id="view-switch" aria-label="Cambiar vista">
+        <button type="button" class="view-button active" data-view="table">Tabla</button>
+        <button type="button" class="view-button" data-view="cards">Tarjetas</button>
+      </div>
+    </section>
+
+    <section class="results-wrap panel-elevated">
+      <table id="results-table" class="hidden">
+        <colgroup>
+          <col class="col-card">
+          <col class="col-store">
+          <col class="col-set">
+          <col class="col-number">
+          <col class="col-language">
+          <col class="col-condition">
+          <col class="col-finish">
+          <col class="col-stock">
+          <col class="col-price">
+          <col class="col-action">
+        </colgroup>
+        <thead>
+          <tr>
+            <th scope="col">Carta</th>
+            <th scope="col">Tienda</th>
+            <th scope="col">Edición</th>
+            <th scope="col" class="center">#</th>
+            <th scope="col">Idioma</th>
+            <th scope="col">Condición</th>
+            <th scope="col">Acabado</th>
+            <th scope="col" class="center">Stock</th>
+            <th scope="col" class="price-head">Precio</th>
+            <th scope="col" aria-label="Comprar"></th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+
+      <div id="results-cards" class="cards-grid hidden"></div>
+    </section>
+  </main>
+
+  <div id="image-modal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button type="button" class="modal-close" id="modal-close" aria-label="Cerrar">×</button>
+      <div class="modal-layout">
+        <div class="modal-image-wrap">
+          <img id="modal-image" class="modal-image" src="" alt="Carta ampliada">
+        </div>
+        <div class="modal-info">
+          <p id="modal-store" class="modal-store"></p>
+          <h2 id="modal-title">Carta</h2>
+          <p id="modal-set" class="modal-set"></p>
+          <div class="modal-meta" id="modal-meta"></div>
+          <div class="modal-price-row">
+            <span id="modal-price" class="modal-price"></span>
+            <span id="modal-stock" class="modal-stock"></span>
+          </div>
+          <a id="modal-link" class="buy modal-buy" href="#" target="_blank" rel="noopener">Ir a la publicación</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="{% static 'searchapp/app.js' %}?v=0.11"></script>
+</body>
+</html>
