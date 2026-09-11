@@ -63,6 +63,23 @@ MERCADIA_BRIDGE_ENABLED = bool(MERCADIA_BRIDGE_KEY) and (
     (os.environ.get("MERCADIA_BRIDGE_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 )
 
+# v0.29: persistent Mercadia catalog uploaded by the Windows bridge.
+# If a Railway Volume is mounted at /data, the catalog survives deploys and
+# restarts. Without a volume Railway falls back to /tmp; the bridge can rebuild
+# it on the next scheduled sync.
+_catalog_dir_env = (os.environ.get("MERCADIA_CATALOG_DIR") or "").strip()
+if _catalog_dir_env:
+    MERCADIA_CATALOG_DIR = Path(_catalog_dir_env)
+elif is_railway and Path("/data").exists():
+    MERCADIA_CATALOG_DIR = Path("/data/fetchuccini")
+elif is_render and Path("/data").exists():
+    MERCADIA_CATALOG_DIR = Path("/data/fetchuccini")
+elif is_railway or is_render:
+    MERCADIA_CATALOG_DIR = Path("/tmp/fetchuccini-data")
+else:
+    MERCADIA_CATALOG_DIR = BASE_DIR / ".data" / "fetchuccini"
+MERCADIA_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",

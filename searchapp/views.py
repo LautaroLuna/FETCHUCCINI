@@ -12,6 +12,13 @@ from django.shortcuts import render
 
 from .services.aggregator import SearchAggregator
 from .services.scryfall import ScryfallService
+from .services.mercadia_catalog import (
+    append_batch as mercadia_catalog_append_batch,
+    begin_sync as mercadia_catalog_begin_sync,
+    catalog_status as mercadia_catalog_status,
+    finish_sync as mercadia_catalog_finish_sync,
+    search_catalog as mercadia_catalog_search,
+)
 
 
 FRESH_CACHE_SECONDS = 5 * 60
@@ -238,6 +245,99 @@ def _mercadia_bridge_waiting_payload(query: str, *, stale_snapshot=None):
     }
 
 
+def _mercadia_catalog_payload(query: str):
+    rows, status = mercadia_catalog_search(query)
+    if not status.get("ready"):
+        return None
+    age = int(status.get("age_seconds") or 0)
+    return {
+        "query": query,
+        "store_key": "mercadia",
+        "results": rows,
+        "store": {
+            "store": "Mercadia",
+            "count": len(rows),
+            "elapsed_ms": 0,
+            "error": None,
+        },
+        "cached": True,
+        "fresh": True,
+        "stale": False,
+        "age_seconds": age,
+        "bridge": True,
+        "bridge_catalog": True,
+        "bridge_synced_at": status.get("synced_at"),
+        "bridge_age_seconds": age,
+        "catalog_count": status.get("count", 0),
+        "catalog_category_count": status.get("category_count", 0),
+    }
+
+
+def _bridge_json(request):
+    try:
+        return json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+@require_GET
+def mercadia_catalog_status_api(request):
+    if not _mercadia_bridge_authorized(request):
+        return JsonResponse({"error": "No autorizado."}, status=403)
+    return JsonResponse(mercadia_catalog_status())
+
+
+@csrf_exempt
+@require_POST
+def mercadia_catalog_start_api(request):
+    if not _mercadia_bridge_authorized(request):
+        return JsonResponse({"error": "No autorizado."}, status=403)
+    payload = _bridge_json(request)
+    if payload is None:
+        return JsonResponse({"error": "JSON inválido."}, status=400)
+    sync_id = str(payload.get("sync_id") or "").strip()
+    if not sync_id:
+        return JsonResponse({"error": "Falta sync_id."}, status=400)
+    try:
+        result = mercadia_catalog_begin_sync(sync_id, metadata=payload.get("metadata") or {})
+    except (ValueError, OSError) as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    return JsonResponse(result)
+
+
+@csrf_exempt
+@require_POST
+def mercadia_catalog_batch_api(request):
+    if not _mercadia_bridge_authorized(request):
+        return JsonResponse({"error": "No autorizado."}, status=403)
+    payload = _bridge_json(request)
+    if payload is None:
+        return JsonResponse({"error": "JSON inválido."}, status=400)
+    sync_id = str(payload.get("sync_id") or "").strip()
+    rows = payload.get("results") or []
+    try:
+        result = mercadia_catalog_append_batch(sync_id, rows)
+    except (ValueError, OSError, FileNotFoundError) as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    return JsonResponse(result)
+
+
+@csrf_exempt
+@require_POST
+def mercadia_catalog_finish_api(request):
+    if not _mercadia_bridge_authorized(request):
+        return JsonResponse({"error": "No autorizado."}, status=403)
+    payload = _bridge_json(request)
+    if payload is None:
+        return JsonResponse({"error": "JSON inválido."}, status=400)
+    sync_id = str(payload.get("sync_id") or "").strip()
+    try:
+        result = mercadia_catalog_finish_sync(sync_id, metadata=payload.get("metadata") or {})
+    except (ValueError, OSError, FileNotFoundError) as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+    return JsonResponse(result)
+
+
 @require_GET
 def mercadia_bridge_jobs_api(request):
     if not _mercadia_bridge_authorized(request):
@@ -376,6 +476,15 @@ def search_store_api(request):
             "message": "Temporalmente no disponible en la versión online.",
         })
 
+    # v0.29: when a complete Mercadia catalog has been synchronized by the
+    # Windows bridge, answer directly from the local catalog. No request to
+    # mercadiacity.com is needed from Railway and even zero-result searches are
+    # definitive until the next hourly catalog sync.
+    if store_key == "mercadia" and _mercadia_bridge_enabled():
+        catalog_payload = _mercadia_catalog_payload(query)
+        if catalog_payload is not None:
+            return JsonResponse(catalog_payload)
+
     fresh_key, stale_key = _store_cache_keys(query, store_key)
     fresh = cache.get(fresh_key)
     if fresh is not None:
@@ -452,6 +561,12 @@ def search_cache_api(request):
     snapshots = []
 
     for store_key in selected:
+        if store_key == "mercadia" and _mercadia_bridge_enabled():
+            catalog_payload = _mercadia_catalog_payload(query)
+            if catalog_payload is not None:
+                snapshots.append(catalog_payload)
+                continue
+
         fresh_key, stale_key = _store_cache_keys(query, store_key)
         fresh = cache.get(fresh_key)
         if fresh is not None:
@@ -477,14 +592,27 @@ def search_api(request):
 
     aggregator = SearchAggregator()
     stores = _selected_store_keys(request, aggregator)
-    listings, runs = aggregator.search(query, stores)
+    catalog_payload = None
+    live_stores = list(stores)
+    if "mercadia" in live_stores and _mercadia_bridge_enabled():
+        catalog_payload = _mercadia_catalog_payload(query)
+        if catalog_payload is not None:
+            live_stores.remove("mercadia")
+
+    listings, runs = aggregator.search(query, live_stores)
+    results = [row.to_dict() for row in listings]
+    store_payloads = [
+        {"store": r.store, "count": r.count, "elapsed_ms": r.elapsed_ms, "error": r.error}
+        for r in runs
+    ]
+    if catalog_payload is not None:
+        results.extend(catalog_payload.get("results") or [])
+        store_payloads.append(catalog_payload.get("store") or {"store": "Mercadia", "count": 0, "elapsed_ms": 0, "error": None})
+
     payload = {
         "query": query,
-        "count": len(listings),
-        "results": [row.to_dict() for row in listings],
-        "stores": [
-            {"store": r.store, "count": r.count, "elapsed_ms": r.elapsed_ms, "error": r.error}
-            for r in runs
-        ],
+        "count": len(results),
+        "results": results,
+        "stores": sorted(store_payloads, key=lambda row: str(row.get("store") or "")),
     }
     return JsonResponse(payload)

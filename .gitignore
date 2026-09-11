@@ -11,3 +11,7 @@ __pycache__/
 .cache/
 mercadia_bridge_config.bat
 mercadia_bridge.log
+
+mercadia_catalog_local.json
+mercadia_catalog_local.lock
+.data/

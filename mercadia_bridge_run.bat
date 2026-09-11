@@ -15,14 +15,14 @@ if exist "%~dp0..\.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0..\.venv\Script
 if not defined PYTHON_EXE if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 
 if defined PYTHON_EXE (
-  echo [%date% %time%] Iniciando Mercadia Bridge...>>"%~dp0mercadia_bridge.log"
-  "%PYTHON_EXE%" "%~dp0scripts\mercadia_bridge.py" >>"%~dp0mercadia_bridge.log" 2>&1
+  echo [%date% %time%] Iniciando sincronizacion completa de Mercadia...>>"%~dp0mercadia_bridge.log"
+  "%PYTHON_EXE%" "%~dp0scripts\mercadia_catalog_sync.py" >>"%~dp0mercadia_bridge.log" 2>&1
   set "EXITCODE=%ERRORLEVEL%"
 ) else (
   where py >nul 2>&1
   if not errorlevel 1 (
-    echo [%date% %time%] Iniciando Mercadia Bridge con py...>>"%~dp0mercadia_bridge.log"
-    py -3 "%~dp0scripts\mercadia_bridge.py" >>"%~dp0mercadia_bridge.log" 2>&1
+    echo [%date% %time%] Iniciando sincronizacion completa de Mercadia con py...>>"%~dp0mercadia_bridge.log"
+    py -3 "%~dp0scripts\mercadia_catalog_sync.py" >>"%~dp0mercadia_bridge.log" 2>&1
     set "EXITCODE=%ERRORLEVEL%"
   ) else (
     echo [%date% %time%] ERROR: Python no encontrado.>>"%~dp0mercadia_bridge.log"

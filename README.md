@@ -206,3 +206,13 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - MagicDealers reduce drásticamente su presupuesto de retries y corta paginación irrelevante.
 - Cache fresca de MagicDealers ampliada a 30 minutos.
 - El Bridge de Mercadia de v0.27 se mantiene sin cambios.
+
+
+## v0.29 — Mercadia Persistent Catalog
+
+- El Bridge de Windows construye un catálogo completo de cartas MTG actualmente comprables en Mercadia a partir de sus páginas de categorías, sin visitar cada ficha de producto.
+- El catálogo se sincroniza con Fetchuccini una vez por hora y se consulta localmente en Railway, eliminando el 403 de las búsquedas normales.
+- La carga se hace por lotes y el reemplazo es atómico, por lo que la copia anterior sigue disponible durante una actualización.
+- Si una categoría falla, el Bridge conserva el último snapshot local de esa categoría.
+- Para persistencia real entre deploys/restarts de Railway, montar un Volume en `/data`; la app usará `/data/fetchuccini/mercadia_catalog.json` automáticamente.
+- `mercadia_bridge_setup.bat` configura la tarea cada 1 hora y `mercadia_bridge_run.bat` permite forzar una sincronización inmediata.
