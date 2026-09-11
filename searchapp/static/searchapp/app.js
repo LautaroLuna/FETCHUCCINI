@@ -515,6 +515,20 @@ function renderStoreStates(){
     const age = formatAge(state.age_seconds || 0);
     const title = state.error ? ` title="${esc(state.error)}"` : '';
 
+    if(state.status === 'bridge-pending'){
+      return `<span class="pill loading">${esc(label)}: esperando sincronización…</span>`;
+    }
+    if(state.bridge){
+      if(state.status === 'refreshing'){
+        return `<span class="pill cached loading"${title}>${esc(label)}: ${count} · sincronizado hace ${age} · actualizando…</span>`;
+      }
+      if(state.status === 'stale-error'){
+        return `<span class="pill stale"${title}>${esc(label)}: ${count} · sincronizado hace ${age} · actualización pendiente</span>`;
+      }
+      if(state.status === 'cached' || state.status === 'done'){
+        return `<span class="pill cached"${title}>${esc(label)}: ${count} · sincronizado hace ${age}</span>`;
+      }
+    }
     if(state.status === 'cached'){
       return `<span class="pill cached"${title}>${esc(label)}: ${count} · cache ${age}</span>`;
     }
@@ -559,13 +573,24 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
   const info = data.store || {};
   const label = info.store || STORE_LABELS[key] || key;
 
-  if(data.stale){
+  if(data.bridge_pending && !(data.results || []).length){
+    storeStates.set(key, {
+      status: 'bridge-pending',
+      label,
+      count: 0,
+      elapsed_ms: 0,
+      age_seconds: 0,
+      bridge: true,
+      error: null,
+    });
+  }else if(data.stale){
     storeStates.set(key, {
       status: fromSnapshot ? 'refreshing' : 'stale-error',
       label,
       count: (data.results || []).length,
       elapsed_ms: info.elapsed_ms || 0,
-      age_seconds: data.age_seconds || 0,
+      age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
+      bridge: !!data.bridge,
       error: info.error || null,
     });
   }else if(data.cached && data.fresh){
@@ -574,7 +599,8 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
       label,
       count: (data.results || []).length,
       elapsed_ms: info.elapsed_ms || 0,
-      age_seconds: data.age_seconds || 0,
+      age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
+      bridge: !!data.bridge,
       error: null,
     });
   }else if(info.error){
@@ -583,7 +609,8 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
       label,
       count: 0,
       elapsed_ms: info.elapsed_ms || 0,
-      age_seconds: 0,
+      age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
+      bridge: !!data.bridge,
       error: info.error,
     });
   }else{
@@ -592,7 +619,8 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
       label,
       count: (data.results || []).length,
       elapsed_ms: info.elapsed_ms || 0,
-      age_seconds: 0,
+      age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
+      bridge: !!data.bridge,
       error: null,
     });
   }

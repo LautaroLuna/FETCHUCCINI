@@ -192,3 +192,10 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Railway nunca necesita consultar directamente el origen de Mercadia cuando el bridge está habilitado.
 - Incluye BAT de instalación, ejecución manual y desinstalación de la tarea horaria.
 - El cache de Mercadia sincronizado es fresco por 2 horas y conserva fallback hasta 7 días.
+
+
+## v0.27
+
+- Mercadia Bridge se ejecuta cada 30 minutos.
+- Las búsquedas activas de Mercadia se resincronizan automáticamente cada 30 minutos.
+- La interfaz muestra la antigüedad de la última sincronización de Mercadia.

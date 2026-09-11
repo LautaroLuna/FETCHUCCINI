@@ -18,10 +18,12 @@ FRESH_CACHE_SECONDS = 5 * 60
 STALE_CACHE_SECONDS = 24 * 60 * 60
 AUTOCOMPLETE_CACHE_SECONDS = 60 * 60
 
-MERCADIA_BRIDGE_FRESH_SECONDS = 2 * 60 * 60
+MERCADIA_BRIDGE_SYNC_SECONDS = 30 * 60
+MERCADIA_BRIDGE_FRESH_SECONDS = 40 * 60
 MERCADIA_BRIDGE_STALE_SECONDS = 7 * 24 * 60 * 60
 MERCADIA_BRIDGE_PENDING_SECONDS = 7 * 24 * 60 * 60
-MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v1:pending"
+MERCADIA_BRIDGE_ACTIVE_SECONDS = 7 * 24 * 60 * 60
+MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v2:pending"
 
 
 
@@ -98,6 +100,7 @@ def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
     ]
     store_info = dict(snapshot.get("store", {}))
     store_info["count"] = len(results)
+    age = _age_seconds(snapshot)
 
     data = {
         "query": snapshot["query"],
@@ -107,8 +110,12 @@ def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
         "cached": True,
         "fresh": bool(fresh),
         "stale": bool(stale),
-        "age_seconds": _age_seconds(snapshot),
+        "age_seconds": age,
     }
+    if snapshot.get("bridge"):
+        data["bridge"] = True
+        data["bridge_synced_at"] = snapshot.get("cached_at")
+        data["bridge_age_seconds"] = age
     if error:
         data["store"]["error"] = error
     return data
@@ -125,24 +132,83 @@ def _mercadia_bridge_authorized(request):
     return bool(expected and provided and secrets.compare_digest(expected, provided))
 
 
-def _queue_mercadia_bridge_query(query: str):
+def _queue_mercadia_bridge_query(query: str, *, due_now=True):
     normalized = " ".join(query.casefold().split())
+    now = float(time.time())
     pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
+    previous = pending.get(normalized) or {}
+    try:
+        previous_due = float(previous.get("next_sync_at", now))
+    except (TypeError, ValueError):
+        previous_due = now
+
     pending[normalized] = {
         "q": query,
-        "requested_at": float(time.time()),
+        "requested_at": float(previous.get("requested_at") or now),
+        "last_requested_at": now,
+        "next_sync_at": min(previous_due, now) if due_now else previous_due,
     }
-    # This queue is intentionally tiny (a few friends using the site), so a
-    # single cache object is simpler than introducing a database dependency.
     cache.set(MERCADIA_BRIDGE_PENDING_KEY, pending, MERCADIA_BRIDGE_PENDING_SECONDS)
 
 
-def _remove_mercadia_bridge_query(query: str):
+def _touch_mercadia_bridge_query(query: str):
     normalized = " ".join(query.casefold().split())
+    now = float(time.time())
     pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
-    if normalized in pending:
-        pending.pop(normalized, None)
-        cache.set(MERCADIA_BRIDGE_PENDING_KEY, pending, MERCADIA_BRIDGE_PENDING_SECONDS)
+    previous = pending.get(normalized)
+    if previous is None:
+        pending[normalized] = {
+            "q": query,
+            "requested_at": now,
+            "last_requested_at": now,
+            "next_sync_at": now + MERCADIA_BRIDGE_SYNC_SECONDS,
+        }
+    else:
+        previous = dict(previous)
+        previous["q"] = query
+        previous["last_requested_at"] = now
+        previous.setdefault("next_sync_at", now + MERCADIA_BRIDGE_SYNC_SECONDS)
+        pending[normalized] = previous
+    cache.set(MERCADIA_BRIDGE_PENDING_KEY, pending, MERCADIA_BRIDGE_PENDING_SECONDS)
+
+
+def _schedule_next_mercadia_bridge_sync(query: str):
+    normalized = " ".join(query.casefold().split())
+    now = float(time.time())
+    pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
+    previous = pending.get(normalized) or {}
+    pending[normalized] = {
+        "q": query,
+        "requested_at": float(previous.get("requested_at") or now),
+        "last_requested_at": float(previous.get("last_requested_at") or now),
+        "next_sync_at": now + MERCADIA_BRIDGE_SYNC_SECONDS,
+    }
+    cache.set(MERCADIA_BRIDGE_PENDING_KEY, pending, MERCADIA_BRIDGE_PENDING_SECONDS)
+
+
+def _cleanup_and_due_mercadia_jobs(limit: int):
+    now = float(time.time())
+    pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
+    kept = {}
+    due = []
+    for normalized, item in pending.items():
+        try:
+            last_requested = float(item.get("last_requested_at") or item.get("requested_at") or now)
+        except (TypeError, ValueError):
+            last_requested = now
+        if now - last_requested > MERCADIA_BRIDGE_ACTIVE_SECONDS:
+            continue
+        kept[normalized] = item
+        try:
+            next_sync = float(item.get("next_sync_at") or 0)
+        except (TypeError, ValueError):
+            next_sync = 0
+        if next_sync <= now:
+            due.append(item)
+
+    cache.set(MERCADIA_BRIDGE_PENDING_KEY, kept, MERCADIA_BRIDGE_PENDING_SECONDS)
+    due.sort(key=lambda item: float(item.get("next_sync_at") or item.get("requested_at") or 0))
+    return due[:limit], len(kept)
 
 
 def _mercadia_bridge_waiting_payload(query: str, *, stale_snapshot=None):
@@ -166,6 +232,7 @@ def _mercadia_bridge_waiting_payload(query: str, *, stale_snapshot=None):
         "fresh": False,
         "stale": False,
         "age_seconds": 0,
+        "bridge": True,
         "bridge_pending": True,
     }
 
@@ -180,9 +247,13 @@ def mercadia_bridge_jobs_api(request):
     except ValueError:
         limit = 50
 
-    pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
-    jobs = sorted(pending.values(), key=lambda item: item.get("requested_at", 0))[:limit]
-    return JsonResponse({"jobs": jobs, "count": len(jobs)})
+    jobs, tracked_count = _cleanup_and_due_mercadia_jobs(limit)
+    return JsonResponse({
+        "jobs": jobs,
+        "count": len(jobs),
+        "tracked_count": tracked_count,
+        "sync_interval_seconds": MERCADIA_BRIDGE_SYNC_SECONDS,
+    })
 
 
 @csrf_exempt
@@ -234,9 +305,15 @@ def mercadia_bridge_push_api(request):
     fresh_key, stale_key = _store_cache_keys(query, "mercadia")
     cache.set(fresh_key, snapshot, MERCADIA_BRIDGE_FRESH_SECONDS)
     cache.set(stale_key, snapshot, MERCADIA_BRIDGE_STALE_SECONDS)
-    _remove_mercadia_bridge_query(query)
+    _schedule_next_mercadia_bridge_sync(query)
 
-    return JsonResponse({"ok": True, "query": query, "count": len(cleaned)})
+    return JsonResponse({
+        "ok": True,
+        "query": query,
+        "count": len(cleaned),
+        "synced_at": snapshot["cached_at"],
+        "next_sync_seconds": MERCADIA_BRIDGE_SYNC_SECONDS,
+    })
 
 
 def autocomplete_api(request):
@@ -301,6 +378,8 @@ def search_store_api(request):
     fresh_key, stale_key = _store_cache_keys(query, store_key)
     fresh = cache.get(fresh_key)
     if fresh is not None:
+        if store_key == "mercadia" and _mercadia_bridge_enabled() and fresh.get("bridge"):
+            _touch_mercadia_bridge_query(query)
         return JsonResponse(_response_from_snapshot(fresh, fresh=True))
 
     # Mercadia blocks Railway/Render IPs with HTTP 403. In bridge mode, never
@@ -374,11 +453,15 @@ def search_cache_api(request):
         fresh_key, stale_key = _store_cache_keys(query, store_key)
         fresh = cache.get(fresh_key)
         if fresh is not None:
+            if store_key == "mercadia" and _mercadia_bridge_enabled() and fresh.get("bridge"):
+                _touch_mercadia_bridge_query(query)
             snapshots.append(_response_from_snapshot(fresh, fresh=True))
             continue
 
         stale = cache.get(stale_key)
         if stale is not None:
+            if store_key == "mercadia" and _mercadia_bridge_enabled() and stale.get("bridge"):
+                _queue_mercadia_bridge_query(query, due_now=True)
             snapshots.append(_response_from_snapshot(stale, stale=True))
 
     return JsonResponse({"query": query, "stores": snapshots})

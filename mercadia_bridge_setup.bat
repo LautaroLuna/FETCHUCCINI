@@ -41,8 +41,8 @@ echo No compartas esta clave ni subas mercadia_bridge_config.bat a GitHub.
 echo El archivo ya esta incluido en .gitignore.
 echo.
 
-echo Creando tarea de Windows para ejecutarse cada 1 hora...
-schtasks /Create /F /SC HOURLY /MO 1 /TN "%TASK_NAME%" /TR "\"%RUNNER%\"" >nul
+echo Creando tarea de Windows para ejecutarse cada 30 minutos...
+schtasks /Create /F /SC MINUTE /MO 30 /TN "%TASK_NAME%" /TR "\"%RUNNER%\"" >nul
 if errorlevel 1 (
   echo [ERROR] Windows no pudo crear la tarea automaticamente.
   echo Proba ejecutar este archivo como administrador.
@@ -51,7 +51,7 @@ if errorlevel 1 (
 )
 
 echo [OK] Tarea creada: %TASK_NAME%
-echo [OK] Se ejecutara una vez por hora.
+echo [OK] Se ejecutara cada 30 minutos.
 echo.
 echo Despues de agregar la variable en Railway y esperar el redeploy,
 echo podes hacer doble click en mercadia_bridge_run.bat para sincronizar ya.
