@@ -1,4 +1,4 @@
-# Fetchuccini — MVP 0.18
+# Fetchuccini — MVP 0.19
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 
@@ -155,3 +155,11 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Vista Tarjetas como predeterminada para usuarios nuevos.
 - La búsqueda acepta prefijos: `lightning` puede devolver todas las cartas cuyo nombre comienza con Lightning.
 - Se conserva la opción de cambiar a Tabla.
+
+
+## v0.19
+
+- Nueva paleta visual inspirada en la forja enana / martillo al rojo vivo: fondos más oscuros, acentos ember rojo-naranja y highlights cálidos.
+- Se agregó favicon local de Fetchuccini (`fetchuccini-forge-icon.png`) para que la pestaña del navegador y buscadores muestren el ícono del martillo sobre el yunque.
+- Se añadieron metadatos básicos (`theme-color`, Open Graph y Twitter) usando la misma imagen de marca.
+- Versionado estático actualizado a `0.19` para forzar recarga de CSS/JS en producción.
