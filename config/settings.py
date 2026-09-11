@@ -42,10 +42,11 @@ for origin in (os.environ.get("CSRF_TRUSTED_ORIGINS") or "").split(","):
     if origin:
         CSRF_TRUSTED_ORIGINS.append(origin)
 
-# Some stores reject requests coming from public datacenter IPs.
-# Keep them enabled locally, but skip them by default on Render/Railway so the
-# public app stays fast and does not retry requests that are known to fail.
-_default_disabled_stores = "pirulo,mercadia" if (is_render or is_railway) else ""
+# v0.23: Pirulo and Mercadia now use public storefront API fallbacks instead of
+# relying only on HTML/search hosts that reject some datacenter IPs. Keep every
+# store enabled by default; FETCHUCCINI_DISABLED_STORES can still disable any
+# adapter immediately from the hosting environment if a store changes again.
+_default_disabled_stores = ""
 FETCHUCCINI_DISABLED_STORES = tuple(
     store.strip()
     for store in os.environ.get("FETCHUCCINI_DISABLED_STORES", _default_disabled_stores).split(",")
