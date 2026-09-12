@@ -495,15 +495,13 @@ function isStoreFinished(state){
   return ['done','cached','error','stale-error'].includes(state?.status);
 }
 
+const ONLINE_CONNECTION_ERROR = 'No se pudo conectar a la pagina online';
+
 function friendlyStoreError(error){
   const text = String(error || '');
   const low = text.toLowerCase();
   if(low.includes('mercadia bridge') || low.includes('sincronización local')) return 'pendiente de sincronización';
-  if(low.includes('403') || low.includes('forbidden')) return 'no disponible online';
-  if(low.includes('429') || low.includes('too many requests')) return 'límite de consultas';
-  if(low.includes('timeout') || low.includes('timed out')) return 'demoró demasiado';
-  if(low.includes('ssl') || low.includes('eof')) return 'conexión inestable';
-  return 'no respondió';
+  return ONLINE_CONNECTION_ERROR;
 }
 
 function renderStoreStates(){
@@ -536,13 +534,13 @@ function renderStoreStates(){
       return `<span class="pill stale loading"${title}>${esc(label)}: ${count} · actualizando…</span>`;
     }
     if(state.status === 'stale-error'){
-      return `<span class="pill stale"${title}>${esc(label)}: ${count} · último dato ${age}</span>`;
+      return `<span class="pill error"${title}>${esc(label)}: ${esc(ONLINE_CONNECTION_ERROR)}</span>`;
     }
     if(state.status === 'error'){
       return `<span class="pill error"${title}>${esc(label)}: ${esc(friendlyStoreError(state.error))}</span>`;
     }
     if(state.status === 'done'){
-      return `<span class="pill">${esc(label)}: ${count} · ${elapsed} ms</span>`;
+      return `<span class="pill cached">${esc(label)}: ${count} · ${elapsed} ms</span>`;
     }
     return `<span class="pill loading">${esc(label)}: buscando…</span>`;
   }).join('');
