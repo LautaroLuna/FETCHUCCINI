@@ -50,7 +50,7 @@ class StoreAdapterContractTests(TestCase):
         listing = MercadiaAdapter()._listing_from_autocomplete_item(item, "Lightning Bolt", True)
         self.assertIsNotNone(listing)
         self.assertEqual(listing.set_code, "M10")
-        self.assertEqual(listing.language, "English")
+        self.assertEqual(listing.language, "Inglés")
         self.assertTrue(listing.available)
 
     def test_magic_lair_search_card_parser(self):
