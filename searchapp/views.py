@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import json
 import secrets
 import time
@@ -12,10 +13,12 @@ from django.shortcuts import render
 
 from .services.aggregator import SearchAggregator
 from .services.scryfall import ScryfallService
+from .services.resilience import circuit_state
 from .services.mercadia_catalog import (
     append_batch as mercadia_catalog_append_batch,
     begin_sync as mercadia_catalog_begin_sync,
     catalog_status as mercadia_catalog_status,
+    catalog_path as mercadia_catalog_path,
     finish_sync as mercadia_catalog_finish_sync,
     search_catalog as mercadia_catalog_search,
 )
@@ -33,13 +36,69 @@ MERCADIA_BRIDGE_PENDING_SECONDS = 7 * 24 * 60 * 60
 MERCADIA_BRIDGE_ACTIVE_SECONDS = 7 * 24 * 60 * 60
 MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v2:pending"
 
+logger = logging.getLogger(__name__)
+
+RATE_LIMITS = {
+    "autocomplete": (90, 60),
+    "search_store": (90, 60),
+    "search_cache": (60, 60),
+    "search_all": (15, 60),
+}
 
 
+def _client_ip(request) -> str:
+    forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")[-1].strip()
+    return forwarded or (request.META.get("REMOTE_ADDR") or "unknown")
+
+
+def _rate_limit_response(request, scope: str):
+    limit, window = RATE_LIMITS[scope]
+    now = int(time.time())
+    bucket = now // window
+    identity = _client_ip(request)
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
+    key = f"rate:v1:{scope}:{digest}:{bucket}"
+    if cache.add(key, 1, timeout=window + 5):
+        count = 1
+    else:
+        try:
+            count = cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, timeout=window + 5)
+            count = 1
+    if count <= limit:
+        return None
+    retry_after = max(1, window - (now % window))
+    logger.warning("Rate limit exceeded scope=%s ip_hash=%s count=%s", scope, digest, count)
+    response = JsonResponse({
+        "error": "Demasiadas búsquedas en poco tiempo. Probá de nuevo en unos segundos.",
+        "retry_after_seconds": retry_after,
+    }, status=429)
+    response["Retry-After"] = str(retry_after)
+    return response
 
 
 def health(request):
-    """Lightweight health check for the hosting platform."""
-    return JsonResponse({"ok": True, "service": "fetchuccini"})
+    """Lightweight health check; never contacts stores or parses the big catalog."""
+    path = mercadia_catalog_path()
+    aggregator = SearchAggregator()
+    open_circuits = {}
+    now = time.time()
+    for key in aggregator.adapter_classes:
+        state = circuit_state(key)
+        if state.get("open_until", 0) > now:
+            open_circuits[key] = max(1, int(state["open_until"] - now))
+    try:
+        catalog_bytes = path.stat().st_size if path.exists() else 0
+    except OSError:
+        catalog_bytes = 0
+    return JsonResponse({
+        "ok": True,
+        "service": "fetchuccini",
+        "mercadia_catalog_ready": catalog_bytes > 0,
+        "mercadia_catalog_bytes": catalog_bytes,
+        "open_store_circuits": open_circuits,
+    })
 
 
 def _disabled_store_keys():
@@ -423,6 +482,9 @@ def autocomplete_api(request):
     Minimum 2 characters plus a one-hour cache keeps the public Scryfall API
     comfortably below its rate limits even when several users type at once.
     """
+    limited = _rate_limit_response(request, "autocomplete")
+    if limited:
+        return limited
     query = (request.GET.get("q") or "").strip()
     if len(query) < 2:
         return JsonResponse({"query": query, "suggestions": []})
@@ -447,6 +509,9 @@ def search_store_api(request):
     Fresh cache is returned instantly. If a live refresh fails, the last
     successful snapshot (up to 24h old) is returned as a stale fallback.
     """
+    limited = _rate_limit_response(request, "search_store")
+    if limited:
+        return limited
     query, error_response = _validate_query(request)
     if error_response:
         return error_response
@@ -552,6 +617,9 @@ def search_store_api(request):
 
 def search_cache_api(request):
     """Return existing cache only; never contacts an external store."""
+    limited = _rate_limit_response(request, "search_cache")
+    if limited:
+        return limited
     query, error_response = _validate_query(request)
     if error_response:
         return error_response
@@ -586,6 +654,9 @@ def search_cache_api(request):
 
 def search_api(request):
     """Compatibility endpoint: waits for all stores like the original MVP."""
+    limited = _rate_limit_response(request, "search_all")
+    if limited:
+        return limited
     query, error_response = _validate_query(request)
     if error_response:
         return error_response

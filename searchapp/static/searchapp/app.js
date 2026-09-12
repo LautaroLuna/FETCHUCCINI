@@ -42,6 +42,7 @@ let autocompleteController = null;
 let autocompleteItems = [];
 let autocompleteIndex = -1;
 let autocompleteGeneration = 0;
+let lastModalFocus = null;
 let bestPrices = new Map();
 
 const PREF_KEYS = {
@@ -475,15 +476,19 @@ function openModal(index){
   modalStock.textContent = row.available ? `Stock: ${row.stock ?? 'Disponible'}` : 'Sin stock';
   modalLink.href = row.url || '#';
   modalLink.style.display = row.url ? 'inline-flex' : 'none';
+  lastModalFocus = document.activeElement;
   modal.classList.remove('hidden');
   modal.setAttribute('aria-hidden', 'false');
   document.body.style.overflow = 'hidden';
+  window.setTimeout(()=>modalClose.focus(), 0);
 }
 
 function closeModal(){
   modal.classList.add('hidden');
   modal.setAttribute('aria-hidden', 'true');
   document.body.style.overflow = '';
+  if(lastModalFocus && typeof lastModalFocus.focus === 'function') lastModalFocus.focus();
+  lastModalFocus = null;
 }
 
 function paginationItems(totalPages, page){
@@ -580,7 +585,17 @@ body.addEventListener('click', handleOpenModalFromEvent);
 cardsGrid.addEventListener('click', handleOpenModalFromEvent);
 modal.addEventListener('click', event => { if(event.target.hasAttribute('data-close-modal')) closeModal(); });
 modalClose.addEventListener('click', closeModal);
-document.addEventListener('keydown', event => { if(event.key === 'Escape' && !modal.classList.contains('hidden')) closeModal(); });
+document.addEventListener('keydown', event => {
+  if(modal.classList.contains('hidden')) return;
+  if(event.key === 'Escape'){ closeModal(); return; }
+  if(event.key !== 'Tab') return;
+  const focusable = [...modal.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(el=>!el.hidden);
+  if(!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length-1];
+  if(event.shiftKey && document.activeElement === first){ event.preventDefault(); last.focus(); }
+  else if(!event.shiftKey && document.activeElement === last){ event.preventDefault(); first.focus(); }
+});
 
 function formatAge(seconds){
   const value = Math.max(0, Number(seconds) || 0);
@@ -599,6 +614,7 @@ function friendlyStoreError(error){
   const text = String(error || '');
   const low = text.toLowerCase();
   if(low.includes('mercadia bridge') || low.includes('sincronización local')) return 'pendiente de sincronización';
+  if(low.includes('demasiadas búsquedas')) return 'Demasiadas búsquedas. Probá de nuevo en unos segundos';
   return ONLINE_CONNECTION_ERROR;
 }
 
@@ -651,7 +667,10 @@ function updateOverallStatus(){
   }
   const finished = activeStoreKeys.filter(key => isStoreFinished(storeStates.get(key))).length;
   const suffix = finished < activeStoreKeys.length ? ` · ${finished}/${activeStoreKeys.length} tiendas listas` : '';
-  statusEl.textContent = `${visibleRows.length} publicaciones visibles · ${rows.length} obtenidas${suffix}`;
+  const base = visibleRows.length === rows.length
+    ? `${rows.length} publicaciones encontradas`
+    : `${visibleRows.length} publicaciones visibles · ${rows.length} obtenidas`;
+  statusEl.textContent = `${base}${suffix}`;
 }
 
 function rebuildRows(){

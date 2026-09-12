@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from time import perf_counter
 from .stores import ALL_ADAPTERS
+from .resilience import circuit_is_open, circuit_record_failure, circuit_record_success
 
 
 @dataclass(slots=True)
@@ -27,6 +28,15 @@ class SearchAggregator:
             raise KeyError(store_key)
 
         started = perf_counter()
+        is_open, retry_after = circuit_is_open(store_key)
+        if is_open:
+            return [], StoreRun(
+                adapter_class.name,
+                0,
+                0,
+                f"CircuitOpen: tienda pausada temporalmente; reintento en {retry_after}s",
+            )
+
         adapter = adapter_class()
         try:
             rows = adapter.search(card_name)
@@ -40,9 +50,11 @@ class SearchAggregator:
             ]
 
             elapsed = int((perf_counter() - started) * 1000)
+            circuit_record_success(store_key)
             return rows, StoreRun(adapter.name, len(rows), elapsed)
         except Exception as exc:
             elapsed = int((perf_counter() - started) * 1000)
+            circuit_record_failure(store_key, f"{type(exc).__name__}: {exc}")
             return [], StoreRun(
                 adapter.name,
                 0,
