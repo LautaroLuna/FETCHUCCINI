@@ -401,8 +401,27 @@ tbody tr:last-child td{border-bottom:0}
   position:relative;
   overflow:visible;
   padding-top:18px;
-  border-color:rgba(245,158,11,.50);
-  box-shadow:0 16px 36px rgba(0,0,0,.24),inset 0 0 0 1px rgba(245,158,11,.08),0 0 0 1px rgba(248,166,62,.05);
+  border-color:rgba(245,158,11,.48);
+  background:
+    radial-gradient(circle at top right, rgba(251,191,36,.08), transparent 24%),
+    linear-gradient(180deg,rgba(28,18,20,.99),rgba(16,12,14,.995));
+  box-shadow:
+    0 18px 38px rgba(0,0,0,.28),
+    inset 0 0 0 1px rgba(248,188,76,.08),
+    0 0 0 1px rgba(248,166,62,.05),
+    0 0 24px rgba(245,158,11,.06);
+  transition:transform .16s ease,border-color .16s ease,box-shadow .22s ease,background .22s ease;
+}
+.best-price-card::before{
+  content:"";
+  position:absolute;
+  inset:1px;
+  border-radius:17px;
+  pointer-events:none;
+  background:
+    radial-gradient(circle at 82% 10%, rgba(255,230,160,.12), transparent 18%),
+    linear-gradient(135deg, rgba(255,210,120,.06), transparent 36%);
+  opacity:.9;
 }
 .best-price-card::after{
   content:"";
@@ -410,9 +429,16 @@ tbody tr:last-child td{border-bottom:0}
   inset:0;
   border-radius:18px;
   pointer-events:none;
-  background:linear-gradient(180deg,rgba(245,158,11,.08),transparent 28%);
+  background:linear-gradient(180deg,rgba(245,158,11,.07),transparent 30%);
 }
-.best-price-card:hover{border-color:#d97706;box-shadow:0 22px 44px rgba(0,0,0,.30),inset 0 0 0 1px rgba(245,158,11,.12),0 0 26px rgba(245,158,11,.10)}
+.best-price-card:hover{
+  border-color:#e39b30;
+  box-shadow:
+    0 24px 52px rgba(0,0,0,.34),
+    inset 0 0 0 1px rgba(248,202,109,.12),
+    0 0 0 1px rgba(248,166,62,.08),
+    0 0 34px rgba(245,158,11,.13);
+}
 .best-price-card .result-card-top{padding-right:108px}
 .result-card-title-row{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}
 .best-price-badge{display:inline-flex;align-items:center;width:max-content;padding:4px 7px;border-radius:999px;border:1px solid rgba(245,158,11,.38);background:rgba(120,53,15,.26);color:#fde68a;font-size:10px;font-weight:900;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}
@@ -436,6 +462,10 @@ tbody tr:last-child td{border-bottom:0}
   display:block;
   width:100%;
   height:auto;
+}
+.best-price-card:hover .best-price-seal{
+  transform:rotate(6deg) scale(1.03);
+  filter:drop-shadow(0 14px 20px rgba(0,0,0,.32)) drop-shadow(0 0 18px rgba(251,191,36,.16));
 }
 @media(max-width:700px){
   .best-prices{align-items:stretch}
