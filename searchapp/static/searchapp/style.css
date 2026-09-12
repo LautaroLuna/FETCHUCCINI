@@ -385,3 +385,20 @@ tbody tr:last-child td{border-bottom:0}
   .pagination-summary{width:100%;text-align:center;margin:0 0 3px}
   .page-button{min-width:38px;min-height:38px;padding:7px 10px}
 }
+
+
+/* v0.31: best prices + accessibility helpers */
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.best-prices{display:flex;align-items:stretch;gap:10px;flex-wrap:wrap;padding:12px 14px;margin:12px 0}
+.best-price-title{display:flex;align-items:center;padding:8px 10px;color:#ffe6c7;font-size:13px;font-weight:900;letter-spacing:.02em}
+.best-price-item{display:grid;gap:2px;min-width:190px;padding:9px 12px;border:1px solid rgba(245,158,11,.28);border-radius:13px;background:linear-gradient(135deg,rgba(120,53,15,.20),rgba(69,10,10,.16))}
+.best-price-item .best-price-kicker{color:#f6b47e;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}
+.best-price-item strong{font-size:17px;color:#fff5e8}
+.best-price-item>span:last-child{color:#cdb9aa;font-size:11px;font-weight:700}
+.best-price-card{border-color:rgba(245,158,11,.50);box-shadow:0 16px 36px rgba(0,0,0,.24),inset 0 0 0 1px rgba(245,158,11,.08)}
+.best-price-card:hover{border-color:#d97706}
+.result-card-title-row{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}
+.best-price-badge{display:inline-flex;align-items:center;width:max-content;padding:4px 7px;border-radius:999px;border:1px solid rgba(245,158,11,.38);background:rgba(120,53,15,.26);color:#fde68a;font-size:10px;font-weight:900;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}
+.price-stack{display:inline-flex;flex-direction:column;align-items:flex-end;gap:5px}
+#results-table .price-stack .best-price-badge{align-self:flex-end}
+@media(max-width:700px){.best-prices{align-items:stretch}.best-price-title{width:100%}.best-price-item{flex:1 1 160px;min-width:0}}

@@ -20,7 +20,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.27">
+  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.31">
 </head>
 <body>
   <main class="shell">
@@ -36,6 +36,7 @@
     <section class="search-panel panel-elevated">
       <form id="search-form">
         <div class="search-input-wrap">
+          <label class="sr-only" for="query">Nombre de la carta</label>
           <input
             id="query"
             name="q"
@@ -74,8 +75,9 @@
       {% endif %}
     </section>
 
-    <section id="status" class="status panel-elevated">Listo para buscar.</section>
-    <section id="store-status" class="store-status panel-elevated"></section>
+    <section id="status" class="status panel-elevated" aria-live="polite">Listo para buscar.</section>
+    <section id="store-status" class="store-status panel-elevated" aria-live="polite"></section>
+    <section id="best-prices" class="best-prices panel-elevated hidden" aria-live="polite"></section>
 
     <section class="filters sticky-toolbar hidden panel-elevated" id="filters">
       <div class="filters-grid">
@@ -161,6 +163,6 @@
     </div>
   </div>
 
-  <script src="{% static 'searchapp/app.js' %}?v=0.27"></script>
+  <script src="{% static 'searchapp/app.js' %}?v=0.31"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_left
 import os
 import threading
 import time
@@ -13,6 +14,8 @@ from django.conf import settings
 _LOCK = threading.RLock()
 _CACHE_MTIME: float | None = None
 _CACHE_DATA: dict | None = None
+_CACHE_INDEX: dict[str, list[dict]] = {}
+_CACHE_NAMES: list[str] = []
 
 
 def _catalog_dir() -> Path:
@@ -71,6 +74,27 @@ def _dedupe_key(row: dict) -> str:
     )
 
 
+def _rebuild_index(data: dict | None) -> None:
+    """Build an in-memory card-name index for fast exact/prefix lookups.
+
+    The catalog itself stays on the Railway Volume; this index only stores
+    references to the already-loaded rows, so exact searches avoid scanning all
+    ~60k Mercadia listings on every request.
+    """
+    global _CACHE_INDEX, _CACHE_NAMES
+    index: dict[str, list[dict]] = {}
+    if data:
+        for raw in data.get("results") or []:
+            if not isinstance(raw, dict) or not _is_in_stock(raw):
+                continue
+            name = _normalize(raw.get("card_name"))
+            if not name:
+                continue
+            index.setdefault(name, []).append(raw)
+    _CACHE_INDEX = index
+    _CACHE_NAMES = sorted(index)
+
+
 def _load_from_disk() -> dict | None:
     global _CACHE_DATA, _CACHE_MTIME
     path = catalog_path()
@@ -81,6 +105,8 @@ def _load_from_disk() -> dict | None:
 
     stat = path.stat()
     if _CACHE_DATA is not None and _CACHE_MTIME == stat.st_mtime:
+        if not _CACHE_INDEX and (_CACHE_DATA.get("results") or []):
+            _rebuild_index(_CACHE_DATA)
         return _CACHE_DATA
 
     try:
@@ -93,6 +119,7 @@ def _load_from_disk() -> dict | None:
 
     _CACHE_DATA = data
     _CACHE_MTIME = stat.st_mtime
+    _rebuild_index(data)
     return data
 
 
@@ -134,23 +161,23 @@ def search_catalog(query: str, limit: int = 1500) -> tuple[list[dict], dict]:
             return [], catalog_status()
 
         results = []
-        exact = []
-        prefix = []
-        for raw in data.get("results") or []:
-            if not isinstance(raw, dict) or not _is_in_stock(raw):
-                continue
-            name = _normalize(raw.get("card_name"))
-            if name == needle:
-                exact.append(raw)
-            elif name.startswith(needle):
-                prefix.append(raw)
 
-        # Exact name first, then prefix matches. This keeps a full-card search
-        # focused while still supporting queries such as "lightning".
-        for row in exact + prefix:
+        # O(1) exact lookup, then binary-search only the matching normalized
+        # names for prefix queries. This replaces a full 60k-row scan per search.
+        for row in _CACHE_INDEX.get(needle, []):
             results.append(dict(row))
             if len(results) >= limit:
-                break
+                return results, catalog_status()
+
+        start = bisect_left(_CACHE_NAMES, needle)
+        end = bisect_left(_CACHE_NAMES, needle + "\uffff")
+        for name in _CACHE_NAMES[start:end]:
+            if name == needle:
+                continue
+            for row in _CACHE_INDEX.get(name, []):
+                results.append(dict(row))
+                if len(results) >= limit:
+                    return results, catalog_status()
 
         return results, catalog_status()
 
@@ -253,6 +280,7 @@ def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
 
         _CACHE_DATA = payload
         _CACHE_MTIME = final_path.stat().st_mtime
+        _rebuild_index(payload)
         return {
             "ok": True,
             "sync_id": sync_id,

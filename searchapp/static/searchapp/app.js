@@ -4,6 +4,7 @@ const q = document.querySelector('#query');
 const autocompleteEl = document.querySelector('#autocomplete');
 const statusEl = document.querySelector('#status');
 const storeStatus = document.querySelector('#store-status');
+const bestPricesEl = document.querySelector('#best-prices');
 const table = document.querySelector('#results-table');
 const body = document.querySelector('#results-body');
 const cardsGrid = document.querySelector('#results-cards');
@@ -41,6 +42,14 @@ let autocompleteController = null;
 let autocompleteItems = [];
 let autocompleteIndex = -1;
 let autocompleteGeneration = 0;
+let bestPrices = new Map();
+
+const PREF_KEYS = {
+  stores: 'fetchuccini:stores',
+  currency: 'fetchuccini:currency',
+  condition: 'fetchuccini:condition',
+  priceOrder: 'fetchuccini:price-order',
+};
 
 const STORE_LABELS = {
   pirulo: 'Pirulo',
@@ -51,6 +60,44 @@ const STORE_LABELS = {
   la_workshop: 'La Workshop',
   starcitygames: 'StarCityGames',
 };
+
+function safeJsonParse(value, fallback){
+  try{ return JSON.parse(value); }catch(_err){ return fallback; }
+}
+
+function restoreStorePreferences(){
+  const stored = safeJsonParse(localStorage.getItem(PREF_KEYS.stores), null);
+  if(!Array.isArray(stored) || !stored.length) return;
+  const allowed = new Set(stored);
+  document.querySelectorAll('#stores input[type=checkbox]').forEach(input=>{
+    if(!input.disabled) input.checked = allowed.has(input.value);
+  });
+}
+
+function saveStorePreferences(){
+  localStorage.setItem(PREF_KEYS.stores, JSON.stringify(selectedStores()));
+}
+
+function restoreSortPreference(){
+  const order = localStorage.getItem(PREF_KEYS.priceOrder);
+  if(order !== 'asc' && order !== 'desc') return;
+  priceSort.dataset.order = order;
+  priceSort.textContent = order === 'asc' ? 'Menor → Mayor' : 'Mayor → Menor';
+  priceSort.setAttribute('aria-label', order === 'asc' ? 'Ordenar precio de menor a mayor' : 'Ordenar precio de mayor a menor');
+}
+
+function restoreFilterPreference(el, key){
+  const preferred = localStorage.getItem(key) || '';
+  if([...el.options].some(option => option.value === preferred)) el.value = preferred;
+}
+
+function syncQueryUrl(query, {replace=false}={}){
+  const url = new URL(window.location.href);
+  if(query) url.searchParams.set('q', query);
+  else url.searchParams.delete('q');
+  const method = replace ? 'replaceState' : 'pushState';
+  window.history[method]({q:query}, '', `${url.pathname}${url.search}${url.hash}`);
+}
 
 function closeAutocomplete(){
   autocompleteItems = [];
@@ -280,9 +327,54 @@ function finishText(row){
 
 function thumbMarkup(row, index){
   if(row.image_url){
-    return `<img class="thumb clickable js-open-modal" data-index="${index}" src="${esc(row.image_url)}" loading="lazy" alt="${esc(row.card_name||'Carta')}" title="Click para ampliar">`;
+    return `<img class="thumb clickable js-open-modal" data-index="${index}" src="${esc(row.image_url)}" loading="lazy" decoding="async" alt="${esc(row.card_name||'Carta')}" title="Click para ampliar">`;
   }
   return '<div class="thumb image-ghost">Sin imagen</div>';
+}
+
+function calculateBestPrices(sourceRows){
+  const map = new Map();
+  for(const row of sourceRows){
+    const currency = String(row.currency || '').toUpperCase();
+    const price = Number(row.price);
+    if(!currency || row.price == null || Number.isNaN(price)) continue;
+    const current = map.get(currency);
+    if(!current || price < current.price){
+      map.set(currency, {price, rows:[row]});
+    }else if(price === current.price){
+      current.rows.push(row);
+    }
+  }
+  return map;
+}
+
+function isBestPrice(row){
+  const currency = String(row.currency || '').toUpperCase();
+  const best = bestPrices.get(currency);
+  if(!best || row.price == null) return false;
+  return Number(row.price) === best.price;
+}
+
+function renderBestPrices(){
+  if(!bestPrices.size){
+    bestPricesEl.innerHTML = '';
+    bestPricesEl.classList.add('hidden');
+    return;
+  }
+  const items = [...bestPrices.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([currency,info])=>{
+    const stores = [...new Set(info.rows.map(row=>row.store).filter(Boolean))].join(' · ');
+    return `<div class="best-price-item">
+      <span class="best-price-kicker">Mejor precio ${esc(currency)}</span>
+      <strong>${formatPrice(info.price,currency)}</strong>
+      <span>${esc(stores || 'Tienda no informada')}</span>
+    </div>`;
+  }).join('');
+  bestPricesEl.innerHTML = `<span class="best-price-title">🏆 Mejores precios</span>${items}`;
+  bestPricesEl.classList.remove('hidden');
+}
+
+function bestPriceBadge(row){
+  return isBestPrice(row) ? '<span class="best-price-badge">Mejor precio</span>' : '';
 }
 
 function renderTable(filtered){
@@ -312,7 +404,7 @@ function renderTable(filtered){
       <td>${badge(r.condition, conditionClass(r.condition))}</td>
       <td>${badge(finish,'finish')}</td>
       <td class="stock-cell"><span class="stock-badge ${r.available?'good':'bad'}">${stockText}</span></td>
-      <td class="price">${formatPrice(r.price,r.currency)}</td>
+      <td class="price"><span class="price-stack">${formatPrice(r.price,r.currency)}${bestPriceBadge(r)}</span></td>
       <td class="action-cell">${r.url?`<a class="buy" target="_blank" rel="noopener" href="${esc(r.url)}">Comprar</a>`:''}</td>
     </tr>`;
   }).join('');
@@ -327,12 +419,12 @@ function renderCards(filtered){
   cardsGrid.innerHTML=filtered.map((r,index)=>{
     const finish=finishText(r);
     const stockText=r.stock==null?(r.available?'Disponible':'Sin stock'):String(r.stock);
-    return `<article class="result-card">
+    return `<article class="result-card ${isBestPrice(r)?'best-price-card':''}">
       <div class="result-card-top">
         <div class="thumb-wrap">${thumbMarkup(r,index)}</div>
         <div class="card-main">
           <div>${storeBadge(r.store)}</div>
-          <h3 class="result-card-title">${esc(r.card_name)}</h3>
+          <div class="result-card-title-row"><h3 class="result-card-title">${esc(r.card_name)}</h3>${bestPriceBadge(r)}</div>
           <p class="result-card-sub">${esc(r.set_name||r.set_code||'Edición no informada')}</p>
           <p class="result-card-sub"># ${esc(r.collector_number||'—')} · ${esc(r.language||'—')}</p>
         </div>
@@ -441,6 +533,9 @@ function render(){
     .slice()
     .sort((a,b)=>comparePrice(a,b,order));
 
+  bestPrices = calculateBestPrices(visibleRows);
+  renderBestPrices();
+
   const totalPages=Math.max(1,Math.ceil(visibleRows.length/PAGE_SIZE));
   currentPage=Math.max(1,Math.min(currentPage,totalPages));
   const start=(currentPage-1)*PAGE_SIZE;
@@ -453,7 +548,9 @@ function render(){
   updateOverallStatus();
 }
 
-[storeFilter,currencyFilter,conditionFilter].forEach(x=>x.addEventListener('change',()=>{currentPage=1;render();}));
+storeFilter.addEventListener('change',()=>{localStorage.setItem(PREF_KEYS.stores + ':filter', storeFilter.value);currentPage=1;render();});
+currencyFilter.addEventListener('change',()=>{localStorage.setItem(PREF_KEYS.currency, currencyFilter.value);currentPage=1;render();});
+conditionFilter.addEventListener('change',()=>{localStorage.setItem(PREF_KEYS.condition, conditionFilter.value);currentPage=1;render();});
 viewButtons.forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.view)));
 pagination.addEventListener('click',event=>{
   const button=event.target.closest('.page-button[data-page]');
@@ -466,6 +563,7 @@ pagination.addEventListener('click',event=>{
 priceSort.addEventListener('click',()=>{
   const next=priceSort.dataset.order==='asc'?'desc':'asc';
   priceSort.dataset.order=next;
+  localStorage.setItem(PREF_KEYS.priceOrder,next);
   priceSort.textContent=next==='asc'?'Menor → Mayor':'Mayor → Menor';
   priceSort.setAttribute('aria-label',next==='asc'?'Ordenar precio de menor a mayor':'Ordenar precio de mayor a menor');
   currentPage=1;
@@ -561,6 +659,9 @@ function rebuildRows(){
   fillSelect(storeFilter, unique('store'));
   fillSelect(currencyFilter, unique('currency'));
   fillSelect(conditionFilter, unique('condition'));
+  restoreFilterPreference(storeFilter, PREF_KEYS.stores + ':filter');
+  restoreFilterPreference(currencyFilter, PREF_KEYS.currency);
+  restoreFilterPreference(conditionFilter, PREF_KEYS.condition);
   filters.classList.remove('hidden');
   renderStoreStates();
   render();
@@ -679,13 +780,15 @@ async function fetchOneStore(query, key, generation){
   }
 }
 
-form.addEventListener('submit', async e=>{
-  e.preventDefault();
+async function runSearch(query, {updateUrl=true}={}){
   closeAutocomplete();
-  const query=q.value.trim();
-  if(!query)return;
+  query = String(query || '').trim();
+  if(!query) return;
   const stores=selectedStores();
-  if(!stores.length){statusEl.textContent='Seleccioná al menos una tienda.';return}
+  if(!stores.length){statusEl.textContent='Seleccioná al menos una tienda.';return;}
+
+  saveStorePreferences();
+  if(updateUrl) syncQueryUrl(query);
 
   searchGeneration += 1;
   const generation = searchGeneration;
@@ -695,6 +798,7 @@ form.addEventListener('submit', async e=>{
   rows = [];
   visibleRows = [];
   currentPageRows = [];
+  bestPrices = new Map();
   currentPage = 1;
 
   filters.classList.remove('hidden');
@@ -704,13 +808,35 @@ form.addEventListener('submit', async e=>{
   render();
 
   // 1) Show whatever we already know immediately (persistent local cache).
-  // 2) Refresh only missing/stale stores. Each store finishes independently,
-  //    so StarCityGames/Workshop can appear while slower shops keep working.
+  // 2) Refresh only missing/stale stores. Each store finishes independently.
   const freshKeys = await fetchCacheSnapshot(query, stores, generation);
   if(generation !== searchGeneration) return;
 
   const toRefresh = stores.filter(key => !freshKeys.has(key));
   await Promise.allSettled(toRefresh.map(key => fetchOneStore(query, key, generation)));
+}
+
+form.addEventListener('submit', e=>{
+  e.preventDefault();
+  runSearch(q.value, {updateUrl:true});
 });
 
+document.querySelectorAll('#stores input[type=checkbox]').forEach(input=>{
+  input.addEventListener('change', saveStorePreferences);
+});
+
+window.addEventListener('popstate',()=>{
+  const query = new URLSearchParams(window.location.search).get('q') || '';
+  q.value = query;
+  if(query) runSearch(query, {updateUrl:false});
+});
+
+restoreStorePreferences();
+restoreSortPreference();
 setView(currentView);
+
+const initialQuery = new URLSearchParams(window.location.search).get('q');
+if(initialQuery){
+  q.value = initialQuery;
+  window.setTimeout(()=>runSearch(initialQuery, {updateUrl:false}), 0);
+}
