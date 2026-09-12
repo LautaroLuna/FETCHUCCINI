@@ -378,12 +378,7 @@ function bestPriceBadge(row, variant='pill'){
   if(!isBestPrice(row)) return '';
   if(variant === 'seal'){
     return `<span class="best-price-seal" aria-label="Mejor precio">
-      <span class="best-price-seal-ribbon best-price-seal-ribbon-left" aria-hidden="true"></span>
-      <span class="best-price-seal-ribbon best-price-seal-ribbon-right" aria-hidden="true"></span>
-      <span class="best-price-seal-center">
-        <span class="best-price-seal-kicker">Mejor</span>
-        <span class="best-price-seal-main">Precio</span>
-      </span>
+      <img class="best-price-seal-image" src="/static/searchapp/medalla_dorada_al_mejor_precio.png" alt="Mejor precio" loading="lazy" decoding="async">
     </span>`;
   }
   return '<span class="best-price-badge">Mejor precio</span>';
