@@ -374,8 +374,19 @@ function renderBestPrices(){
   bestPricesEl.classList.remove('hidden');
 }
 
-function bestPriceBadge(row){
-  return isBestPrice(row) ? '<span class="best-price-badge">Mejor precio</span>' : '';
+function bestPriceBadge(row, variant='pill'){
+  if(!isBestPrice(row)) return '';
+  if(variant === 'seal'){
+    return `<span class="best-price-seal" aria-label="Mejor precio">
+      <span class="best-price-seal-ribbon best-price-seal-ribbon-left" aria-hidden="true"></span>
+      <span class="best-price-seal-ribbon best-price-seal-ribbon-right" aria-hidden="true"></span>
+      <span class="best-price-seal-center">
+        <span class="best-price-seal-kicker">Mejor</span>
+        <span class="best-price-seal-main">Precio</span>
+      </span>
+    </span>`;
+  }
+  return '<span class="best-price-badge">Mejor precio</span>';
 }
 
 function renderTable(filtered){
@@ -421,11 +432,12 @@ function renderCards(filtered){
     const finish=finishText(r);
     const stockText=r.stock==null?(r.available?'Disponible':'Sin stock'):String(r.stock);
     return `<article class="result-card ${isBestPrice(r)?'best-price-card':''}">
+      ${bestPriceBadge(r,'seal')}
       <div class="result-card-top">
         <div class="thumb-wrap">${thumbMarkup(r,index)}</div>
         <div class="card-main">
           <div>${storeBadge(r.store)}</div>
-          <div class="result-card-title-row"><h3 class="result-card-title">${esc(r.card_name)}</h3>${bestPriceBadge(r)}</div>
+          <div class="result-card-title-row"><h3 class="result-card-title">${esc(r.card_name)}</h3></div>
           <p class="result-card-sub">${esc(r.set_name||r.set_code||'Edición no informada')}</p>
           <p class="result-card-sub"># ${esc(r.collector_number||'—')} · ${esc(r.language||'—')}</p>
         </div>
