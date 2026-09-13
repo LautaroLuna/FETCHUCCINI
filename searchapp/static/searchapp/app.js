@@ -416,12 +416,14 @@ function renderCards(filtered){
   cardsGrid.innerHTML=filtered.map((r,index)=>{
     const finish=finishText(r);
     const stockText=r.stock==null?(r.available?'Disponible':'Sin stock'):String(r.stock);
-    return `<article class="result-card ${isBestPrice(r)?'best-price-card':''}">
+    const bestPrice=isBestPrice(r);
+    return `<article class="result-card ${bestPrice?'best-price-card':''}">
       <div class="result-card-top">
         <div class="thumb-wrap">${thumbMarkup(r,index)}</div>
         <div class="card-main">
           <div>${storeBadge(r.store)}</div>
           <div class="result-card-title-row"><h3 class="result-card-title">${esc(r.card_name)}</h3></div>
+          ${bestPrice?'<div class="best-price-inline-wrap"><span class="best-price-inline-badge">Mejor precio</span></div>':''}
           <p class="result-card-sub">${esc(r.set_name||r.set_code||'Edición no informada')}</p>
           <p class="result-card-sub"># ${esc(r.collector_number||'—')} · ${esc(r.language||'—')}</p>
         </div>
