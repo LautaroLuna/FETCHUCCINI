@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from .stores import ALL_ADAPTERS
 from .resilience import circuit_is_open, circuit_record_failure, circuit_record_success
+from .utils import search_query_variants
 
 
 @dataclass(slots=True)
@@ -39,7 +40,14 @@ class SearchAggregator:
 
         adapter = adapter_class()
         try:
-            rows = adapter.search(card_name)
+            query_variants = search_query_variants(card_name) or [card_name]
+            rows = adapter.search(query_variants[0])
+
+            # Some stores index card names without Scryfall diacritics. Avoid
+            # doubling normal traffic: only retry with the accent-folded name
+            # when the canonical spelling returned no listings.
+            if not rows and len(query_variants) > 1:
+                rows = adapter.search(query_variants[1])
 
             # Fetchuccini only exposes purchasable listings. A listing with
             # available=False or an explicit stock of 0 is discarded here so
