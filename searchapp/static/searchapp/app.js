@@ -374,16 +374,6 @@ function renderBestPrices(){
   bestPricesEl.classList.remove('hidden');
 }
 
-function bestPriceBadge(row, variant='pill'){
-  if(!isBestPrice(row)) return '';
-  if(variant === 'seal'){
-    return `<span class="best-price-seal" aria-label="Mejor precio">
-      <img class="best-price-seal-image" src="/static/searchapp/medalla_dorada_al_mejor_precio.png" alt="Mejor precio" loading="lazy" decoding="async">
-    </span>`;
-  }
-  return '<span class="best-price-badge">Mejor precio</span>';
-}
-
 function renderTable(filtered){
   if(!filtered.length){
     body.innerHTML='<tr><td colspan="10" class="empty-state">No se encontraron publicaciones con los filtros actuales.</td></tr>';
@@ -411,7 +401,7 @@ function renderTable(filtered){
       <td>${badge(r.condition, conditionClass(r.condition))}</td>
       <td>${badge(finish,'finish')}</td>
       <td class="stock-cell"><span class="stock-badge ${r.available?'good':'bad'}">${stockText}</span></td>
-      <td class="price"><span class="price-stack">${formatPrice(r.price,r.currency)}${bestPriceBadge(r)}</span></td>
+      <td class="price">${formatPrice(r.price,r.currency)}</td>
       <td class="action-cell">${r.url?`<a class="buy" target="_blank" rel="noopener" href="${esc(r.url)}">Comprar</a>`:''}</td>
     </tr>`;
   }).join('');
@@ -427,7 +417,6 @@ function renderCards(filtered){
     const finish=finishText(r);
     const stockText=r.stock==null?(r.available?'Disponible':'Sin stock'):String(r.stock);
     return `<article class="result-card ${isBestPrice(r)?'best-price-card':''}">
-      ${bestPriceBadge(r,'seal')}
       <div class="result-card-top">
         <div class="thumb-wrap">${thumbMarkup(r,index)}</div>
         <div class="card-main">
