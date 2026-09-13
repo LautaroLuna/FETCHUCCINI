@@ -3,7 +3,7 @@
 <html lang="es">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Fetchuccini</title>
   <meta name="description" content="Compará precio y stock de cartas MTG entre múltiples tiendas en un solo lugar.">
   <meta name="theme-color" content="#150d10">
@@ -15,12 +15,12 @@
   <meta name="twitter:title" content="Fetchuccini">
   <meta name="twitter:description" content="Compará precio y stock de cartas MTG entre múltiples tiendas en un solo lugar.">
   <meta name="twitter:image" content="{% static 'searchapp/fetchuccini-forge-icon.png' %}">
-  <link rel="icon" type="image/png" sizes="32x32" href="{% static 'searchapp/fetchuccini-forge-icon.png' %}">
-  <link rel="apple-touch-icon" href="{% static 'searchapp/fetchuccini-forge-icon.png' %}">
+  <link rel="icon" type="image/png" sizes="32x32" href="{% static 'searchapp/fetchuccini-forge-icon-32.png' %}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{% static 'searchapp/fetchuccini-forge-icon-180.png' %}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}?v=0.32">
+  <link rel="stylesheet" href="{% static 'searchapp/style.css' %}">
 </head>
 <body>
   <main class="shell">
@@ -79,8 +79,9 @@
     <section id="store-status" class="store-status panel-elevated" aria-live="polite"></section>
     <section id="best-prices" class="best-prices panel-elevated hidden" aria-live="polite"></section>
 
-    <section class="filters sticky-toolbar hidden panel-elevated" id="filters">
-      <div class="filters-grid">
+    <section class="filters sticky-toolbar hidden panel-elevated mobile-filters-collapsed" id="filters">
+      <button id="mobile-filters-toggle" class="mobile-filters-toggle" type="button" aria-expanded="false" aria-controls="filters-grid">Filtros</button>
+      <div class="filters-grid" id="filters-grid">
         <label>Tienda
           <select id="store-filter"><option value="">Todas</option></select>
         </label>
@@ -163,6 +164,6 @@
     </div>
   </div>
 
-  <script src="{% static 'searchapp/app.js' %}?v=0.32"></script>
+  <script src="{% static 'searchapp/app.js' %}"></script>
 </body>
 </html>

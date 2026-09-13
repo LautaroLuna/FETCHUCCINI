@@ -1,4 +1,5 @@
 import re
+import time
 from decimal import Decimal
 from urllib.parse import urljoin
 
@@ -16,6 +17,9 @@ class PiruloAdapter(StoreAdapter):
     SEARCH = "https://lgsc-search.lgs-companion.com/suggest-name"
     STORE_HASH = "8lxt5ysjan"
     SUGGEST_LIMIT = 12
+    TOKEN_TTL_SECONDS = 20 * 60
+    _cached_storefront_token = None
+    _cached_storefront_token_until = 0.0
 
     # v0.23: The LGS Companion suggestion host rejects some datacenter IPs.
     # BigCommerce's own Storefront GraphQL API is also a public storefront data
@@ -92,13 +96,33 @@ class PiruloAdapter(StoreAdapter):
                 return m.group(1)
         return None
 
-    def _storefront_token(self) -> str | None:
+    @classmethod
+    def _invalidate_storefront_token(cls):
+        cls._cached_storefront_token = None
+        cls._cached_storefront_token_until = 0.0
+
+    def _storefront_token(self, force_refresh: bool = False) -> str | None:
         # The token is intentionally fetched at runtime from public storefront
-        # HTML. Do not copy/persist the token in source control.
+        # HTML. Cache it only in process memory to avoid an extra Pirulo page
+        # request for every card search. It is never written to disk/source.
+        now = time.monotonic()
+        cls = type(self)
+        if (
+            not force_refresh
+            and cls._cached_storefront_token
+            and now < cls._cached_storefront_token_until
+        ):
+            return cls._cached_storefront_token
+
+        if force_refresh:
+            cls._invalidate_storefront_token()
+
         for url in (self.BASE + "/", self.BASE + "/magic-the-gathering/mtg-singles/"):
             try:
                 token = self._token_from_html(self.http.get(url).text)
                 if token:
+                    cls._cached_storefront_token = token
+                    cls._cached_storefront_token_until = time.monotonic() + self.TOKEN_TTL_SECONDS
                     return token
             except requests.RequestException:
                 continue
@@ -199,18 +223,31 @@ class PiruloAdapter(StoreAdapter):
         token = self._storefront_token()
         if not token:
             raise RuntimeError("Pirulo: no se pudo obtener el token público de Storefront.")
-        response = self.http.post(
-            f"{self.BASE}/graphql",
-            json={
-                "query": self.SEARCH_GQL,
-                "variables": {"term": card_name, "first": 50, "variantFirst": 250},
-            },
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-        ).json()
+
+        def request_graphql(active_token: str):
+            return self.http.post(
+                f"{self.BASE}/graphql",
+                json={
+                    "query": self.SEARCH_GQL,
+                    "variables": {"term": card_name, "first": 50, "variantFirst": 250},
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {active_token}",
+                },
+            ).json()
+
+        try:
+            response = request_graphql(token)
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status not in {401, 403}:
+                raise
+            token = self._storefront_token(force_refresh=True)
+            if not token:
+                raise
+            response = request_graphql(token)
         if response.get("errors"):
             raise RuntimeError(f"Pirulo GraphQL: {response['errors'][0].get('message', 'error')}")
         products = (((((response.get("data") or {}).get("site") or {}).get("search") or {}).get("searchProducts") or {}).get("products") or {}).get("edges") or []

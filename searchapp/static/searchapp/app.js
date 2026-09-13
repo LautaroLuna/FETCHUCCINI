@@ -26,13 +26,18 @@ const modalPrice = document.querySelector('#modal-price');
 const modalStock = document.querySelector('#modal-stock');
 const modalLink = document.querySelector('#modal-link');
 const modalClose = document.querySelector('#modal-close');
+const mobileFiltersToggle = document.querySelector('#mobile-filters-toggle');
+const MOBILE_MEDIA = window.matchMedia('(max-width: 700px)');
 
 let rows = [];
 let visibleRows = [];
 let currentPageRows = [];
 let currentPage = 1;
 const PAGE_SIZE = 24;
-let currentView = localStorage.getItem('fetchuccini:view') || 'cards';
+const MAX_PARALLEL_STORES = 4;
+let preferredView = localStorage.getItem('fetchuccini:view') || 'cards';
+let currentView = preferredView;
+const activeSearchControllers = new Set();
 let activeStoreKeys = [];
 let storeRows = new Map();
 let storeStates = new Map();
@@ -448,12 +453,27 @@ function renderCards(filtered){
   }).join('');
 }
 
-function setView(view){
-  currentView = view === 'cards' ? 'cards' : 'table';
-  localStorage.setItem('fetchuccini:view', currentView);
+function setView(view, {persist=true}={}){
+  const requested = view === 'cards' ? 'cards' : 'table';
+  if(persist){
+    preferredView = requested;
+    localStorage.setItem('fetchuccini:view', preferredView);
+  }
+  currentView = MOBILE_MEDIA.matches ? 'cards' : requested;
   viewButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.view === currentView));
   table.classList.toggle('hidden', currentView !== 'table');
   cardsGrid.classList.toggle('hidden', currentView !== 'cards');
+}
+
+function syncResponsiveView(){
+  setView(preferredView, {persist:false});
+  if(MOBILE_MEDIA.matches){
+    filters.classList.add('mobile-filters-collapsed');
+    mobileFiltersToggle?.setAttribute('aria-expanded','false');
+  }else{
+    filters.classList.remove('mobile-filters-collapsed');
+    mobileFiltersToggle?.setAttribute('aria-expanded','true');
+  }
 }
 
 function openModal(index){
@@ -547,7 +567,7 @@ function render(){
   renderTable(currentPageRows);
   renderCards(currentPageRows);
   renderPagination(visibleRows.length);
-  setView(currentView);
+  setView(preferredView, {persist:false});
   updateOverallStatus();
 }
 
@@ -555,6 +575,12 @@ storeFilter.addEventListener('change',()=>{localStorage.setItem(PREF_KEYS.stores
 currencyFilter.addEventListener('change',()=>{localStorage.setItem(PREF_KEYS.currency, currencyFilter.value);currentPage=1;render();});
 conditionFilter.addEventListener('change',()=>{localStorage.setItem(PREF_KEYS.condition, conditionFilter.value);currentPage=1;render();});
 viewButtons.forEach(btn=>btn.addEventListener('click',()=>setView(btn.dataset.view)));
+mobileFiltersToggle?.addEventListener('click',()=>{
+  const collapsed = filters.classList.toggle('mobile-filters-collapsed');
+  mobileFiltersToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+});
+if(MOBILE_MEDIA.addEventListener) MOBILE_MEDIA.addEventListener('change', syncResponsiveView);
+else MOBILE_MEDIA.addListener?.(syncResponsiveView);
 pagination.addEventListener('click',event=>{
   const button=event.target.closest('.page-button[data-page]');
   if(!button||button.disabled)return;
@@ -744,10 +770,41 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
   rebuildRows();
 }
 
+function createSearchController(){
+  const controller = new AbortController();
+  activeSearchControllers.add(controller);
+  return controller;
+}
+
+function releaseSearchController(controller){
+  activeSearchControllers.delete(controller);
+}
+
+function abortActiveSearchRequests(){
+  for(const controller of activeSearchControllers){
+    try{ controller.abort(); }catch(_err){}
+  }
+  activeSearchControllers.clear();
+}
+
+async function runWithConcurrency(items, limit, worker){
+  if(!items.length) return;
+  let cursor = 0;
+  const runner = async()=>{
+    while(cursor < items.length){
+      const index = cursor++;
+      await worker(items[index]);
+    }
+  };
+  const workers = Array.from({length:Math.min(limit,items.length)},()=>runner());
+  await Promise.allSettled(workers);
+}
+
 async function fetchCacheSnapshot(query, stores, generation){
   const params = new URLSearchParams({q:query, stores:stores.join(',')});
+  const controller = createSearchController();
   try{
-    const response = await fetch(`/api/search/cache/?${params}`);
+    const response = await fetch(`/api/search/cache/?${params}`, {signal:controller.signal});
     if(!response.ok) return new Set();
     const data = await response.json();
     if(generation !== searchGeneration) return new Set();
@@ -760,14 +817,17 @@ async function fetchCacheSnapshot(query, stores, generation){
       if(snapshot.fresh) freshKeys.add(key);
     }
     return freshKeys;
-  }catch(_err){
+  }catch(err){
+    if(err?.name === 'AbortError') return new Set();
     return new Set();
+  }finally{
+    releaseSearchController(controller);
   }
 }
 
 async function fetchOneStore(query, key, generation){
   const params = new URLSearchParams({q:query, store:key});
-  const controller = new AbortController();
+  const controller = createSearchController();
   const timeoutId = setTimeout(()=>controller.abort(), 90000);
   try{
     const response = await fetch(`/api/search/store/?${params}`, {signal:controller.signal});
@@ -777,9 +837,10 @@ async function fetchOneStore(query, key, generation){
     applyStorePayload(key, data);
   }catch(err){
     if(generation !== searchGeneration) return;
+    const message = err?.name === 'AbortError' ? 'La búsqueda demoró demasiado' : (err?.message || 'Error');
     const previous = storeStates.get(key);
     if(previous?.status === 'refreshing' && (storeRows.get(key) || []).length){
-      storeStates.set(key, {...previous, status:'stale-error', error:err.message});
+      storeStates.set(key, {...previous, status:'stale-error', error:message});
     }else{
       storeStates.set(key, {
         status:'error',
@@ -787,13 +848,14 @@ async function fetchOneStore(query, key, generation){
         count:0,
         elapsed_ms:0,
         age_seconds:0,
-        error:err.message,
+        error:message,
       });
     }
     renderStoreStates();
     updateOverallStatus();
   }finally{
     clearTimeout(timeoutId);
+    releaseSearchController(controller);
   }
 }
 
@@ -809,6 +871,7 @@ async function runSearch(query, {updateUrl=true}={}){
 
   searchGeneration += 1;
   const generation = searchGeneration;
+  abortActiveSearchRequests();
   activeStoreKeys = stores;
   storeRows = new Map();
   storeStates = new Map(stores.map(key => [key, {status:'loading', label:STORE_LABELS[key] || key, count:0}]));
@@ -830,7 +893,7 @@ async function runSearch(query, {updateUrl=true}={}){
   if(generation !== searchGeneration) return;
 
   const toRefresh = stores.filter(key => !freshKeys.has(key));
-  await Promise.allSettled(toRefresh.map(key => fetchOneStore(query, key, generation)));
+  await runWithConcurrency(toRefresh, MAX_PARALLEL_STORES, key => fetchOneStore(query, key, generation));
 }
 
 form.addEventListener('submit', e=>{
@@ -850,7 +913,7 @@ window.addEventListener('popstate',()=>{
 
 restoreStorePreferences();
 restoreSortPreference();
-setView(currentView);
+syncResponsiveView();
 
 const initialQuery = new URLSearchParams(window.location.search).get('q');
 if(initialQuery){

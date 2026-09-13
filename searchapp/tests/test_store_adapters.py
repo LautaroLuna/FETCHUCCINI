@@ -65,6 +65,38 @@ class StoreAdapterContractTests(TestCase):
         self.assertEqual(str(rows[0].price), "2500")
         self.assertEqual(rows[0].finish, "Foil")
 
+
+    def test_magic_lair_pagination_detects_next_page(self):
+        html = """<ol class="pagination"><li class="active">1</li><li><a href="/search?page=2&q=bolt&type=product">Next page »</a></li></ol>"""
+        self.assertTrue(MagicLairAdapter._has_next_page(html, 1))
+        self.assertFalse(MagicLairAdapter._has_next_page(html, 2))
+
+    def test_magic_lair_caps_leading_empty_pages(self):
+        html = """<ol class="pagination"><li><a href="/search?page=99&q=nope&type=product">Next page »</a></li></ol>"""
+
+        class CountingHttp:
+            def __init__(self):
+                self.calls = 0
+            def get(self, *args, **kwargs):
+                self.calls += 1
+                return FakeResponse(text=html)
+
+        http = CountingHttp()
+        adapter = MagicLairAdapter(http=http)
+        adapter.PAGE_DELAY_SECONDS = 0
+        rows = adapter.search("Definitely Missing Card")
+        self.assertEqual(rows, [])
+        self.assertEqual(http.calls, adapter.MAX_LEADING_EMPTY_PAGES)
+
+    def test_pirulo_storefront_token_is_cached_in_memory(self):
+        PiruloAdapter._invalidate_storefront_token()
+        http = QueueHttp([FakeResponse(text="<script>STOREFRONT_TOKEN = 'public-token'</script>")])
+        adapter = PiruloAdapter(http=http)
+        self.assertEqual(adapter._storefront_token(), "public-token")
+        self.assertEqual(adapter._storefront_token(), "public-token")
+        self.assertEqual(http.responses, [])
+        PiruloAdapter._invalidate_storefront_token()
+
     def test_batikueva_product_meta_parser(self):
         soup = BeautifulSoup("""<article><a href="/productos/lightning-bolt/" title="Lightning Bolt">Lightning Bolt</a><img src="//img.test/bolt.jpg"><span data-product-id="77"></span></article>""", "html.parser")
         title, href, image, product_id = BatikuevaAdapter()._product_meta(soup.article)

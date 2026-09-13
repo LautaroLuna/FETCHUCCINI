@@ -16,6 +16,7 @@ class MagicLairAdapter(StoreAdapter):
     name = "Magic Lair"
     BASE = "https://www.lair.com.ar"
     MAX_PAGES = 9
+    MAX_LEADING_EMPTY_PAGES = 3
     PAGE_DELAY_SECONDS = 0.20
 
     def _parse_page(self, html: str, card_name: str) -> list[Listing]:
@@ -101,10 +102,33 @@ class MagicLairAdapter(StoreAdapter):
 
         return out
 
+    @staticmethod
+    def _has_next_page(html: str, current_page: int) -> bool:
+        """Return whether Shopify exposes a real next page link.
+
+        Magic Lair renders an ``ol.pagination`` with a text ``Next`` link.
+        Using the page controls lets us stop immediately at the real end instead
+        of blindly walking all ``MAX_PAGES``.
+        """
+        soup = BeautifulSoup(html or "", "html.parser")
+        pagination = soup.select_one("ol.pagination, .pagination")
+        if not pagination:
+            return False
+        for link in pagination.select("a[href]"):
+            href = link.get("href") or ""
+            label = normalize_space(link.get_text(" ", strip=True)).casefold()
+            page_match = re.search(r"(?:[?&])page=(\d+)", href)
+            if page_match and int(page_match.group(1)) > current_page:
+                return True
+            if label.startswith("next") and not page_match:
+                return True
+        return False
+
     def search(self, card_name: str) -> list[Listing]:
         out: list[Listing] = []
         seen_variants = set()
         matched_on_previous_page = False
+        leading_empty_pages = 0
 
         for page in range(1, self.MAX_PAGES + 1):
             try:
@@ -129,9 +153,20 @@ class MagicLairAdapter(StoreAdapter):
                 out.append(row)
                 added += 1
 
-            # Shopify repeats/ends pagination cleanly. If a page contributes no
-            # matching variants after we have already found exact products, stop.
+            # Stop as soon as Shopify says there is no next page. For very broad
+            # searches with no exact/prefix match, cap leading empty work at three
+            # pages so one missing card cannot fan out into nine remote requests.
+            has_next_page = self._has_next_page(response.text, page)
+            if page_rows:
+                leading_empty_pages = 0
+            else:
+                leading_empty_pages += 1
+
+            if not has_next_page:
+                break
             if not page_rows and matched_on_previous_page:
+                break
+            if not out and leading_empty_pages >= self.MAX_LEADING_EMPTY_PAGES:
                 break
             matched_on_previous_page = bool(page_rows)
 
