@@ -4,6 +4,7 @@ from time import perf_counter
 from .stores import ALL_ADAPTERS
 from .resilience import circuit_is_open, circuit_record_failure, circuit_record_success
 from .utils import search_query_variants
+from .listing_normalization import dedupe_listings
 
 
 @dataclass(slots=True)
@@ -41,21 +42,25 @@ class SearchAggregator:
         adapter = adapter_class()
         try:
             query_variants = search_query_variants(card_name) or [card_name]
-            rows = adapter.search(query_variants[0])
+            rows = []
 
-            # Some stores index card names without Scryfall diacritics. Avoid
-            # doubling normal traffic: only retry with the accent-folded name
-            # when the canonical spelling returned no listings.
-            if not rows and len(query_variants) > 1:
-                rows = adapter.search(query_variants[1])
+            # Try increasingly tolerant MTG-name variants only when the prior
+            # variant did not yield a purchasable listing. This keeps ordinary
+            # searches at one request while covering accents, curly apostrophes,
+            # Unicode dashes and split-card naming differences.
+            for variant in query_variants:
+                candidate_rows = adapter.search(variant)
+                candidate_rows = [
+                    row for row in candidate_rows
+                    if row.available and (row.stock is None or row.stock > 0)
+                ]
+                if candidate_rows:
+                    rows = candidate_rows
+                    break
 
-            # Fetchuccini only exposes purchasable listings. A listing with
-            # available=False or an explicit stock of 0 is discarded here so
-            # every endpoint/cache/frontend receives stock-only results.
-            rows = [
-                row for row in rows
-                if row.available and (row.stock is None or row.stock > 0)
-            ]
+            # Normalize store vocabularies and collapse duplicate variants that
+            # can appear across storefront pagination/search endpoints.
+            rows = dedupe_listings(rows)
 
             elapsed = int((perf_counter() - started) * 1000)
             circuit_record_success(store_key)
@@ -87,6 +92,7 @@ class SearchAggregator:
                 results.extend(rows)
                 runs.append(status)
 
+        results = dedupe_listings(results)
         results.sort(key=lambda x: (
             0 if x.available else 1,
             x.currency or "ZZZ",

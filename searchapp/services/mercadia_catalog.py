@@ -5,10 +5,15 @@ from bisect import bisect_left
 import os
 import threading
 import time
-import unicodedata
 from pathlib import Path
 
 from django.conf import settings
+
+from .listing_normalization import (
+    dedupe_listing_dicts,
+    normalize_listing_dict,
+)
+from .utils import normalize_card_search_text
 
 
 _LOCK = threading.RLock()
@@ -16,6 +21,14 @@ _CACHE_MTIME: float | None = None
 _CACHE_DATA: dict | None = None
 _CACHE_INDEX: dict[str, list[dict]] = {}
 _CACHE_NAMES: list[str] = []
+
+_RESERVED_METADATA_KEYS = {"version", "synced_at", "count", "results", "sync_id", "started_at"}
+
+
+def _safe_metadata(metadata: dict | None) -> dict:
+    if not isinstance(metadata, dict):
+        return {}
+    return {str(key): value for key, value in metadata.items() if str(key) not in _RESERVED_METADATA_KEYS}
 
 
 def _catalog_dir() -> Path:
@@ -40,9 +53,7 @@ def _staging_meta_path(sync_id: str) -> Path:
 
 
 def _normalize(value: str | None) -> str:
-    text = unicodedata.normalize("NFKD", str(value or "")).casefold()
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return " ".join(text.split())
+    return normalize_card_search_text(value)
 
 
 def _is_in_stock(row: dict) -> bool:
@@ -57,30 +68,41 @@ def _is_in_stock(row: dict) -> bool:
         return True
 
 
-def _dedupe_key(row: dict) -> str:
-    for key in ("product_id", "sku", "url"):
-        value = row.get(key)
-        if value not in (None, ""):
-            return f"{key}:{value}"
-    return "|".join(
-        [
-            _normalize(row.get("card_name")),
-            _normalize(row.get("set_name")),
-            _normalize(row.get("collector_number")),
-            _normalize(row.get("language")),
-            _normalize(row.get("condition")),
-            _normalize(row.get("finish")),
-        ]
-    )
+def _freshness(age_seconds: int | None) -> str:
+    if age_seconds is None:
+        return "unknown"
+    warn_after = max(60, int(getattr(settings, "MERCADIA_CATALOG_WARN_AGE_SECONDS", 12 * 60 * 60)))
+    stale_after = max(warn_after, int(getattr(settings, "MERCADIA_CATALOG_STALE_AGE_SECONDS", 36 * 60 * 60)))
+    if age_seconds >= stale_after:
+        return "stale"
+    if age_seconds >= warn_after:
+        return "warning"
+    return "fresh"
+
+
+def _cleanup_staging_files(*, now: float | None = None) -> int:
+    """Delete abandoned bridge staging files so the persistent Volume stays tidy."""
+    current = float(now if now is not None else time.time())
+    max_age = max(60 * 60, int(getattr(settings, "MERCADIA_STAGING_MAX_AGE_SECONDS", 24 * 60 * 60)))
+    removed = 0
+    directory = _catalog_dir()
+    for path in directory.glob("mercadia_catalog.*"):
+        if path.name == "mercadia_catalog.json" or path.suffix == ".tmp":
+            continue
+        if not (path.name.endswith(".jsonl") or path.name.endswith(".meta.json")):
+            continue
+        try:
+            if current - path.stat().st_mtime <= max_age:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _rebuild_index(data: dict | None) -> None:
-    """Build an in-memory card-name index for fast exact/prefix lookups.
-
-    The catalog itself stays on the Railway Volume; this index only stores
-    references to the already-loaded rows, so exact searches avoid scanning all
-    ~60k Mercadia listings on every request.
-    """
+    """Build an in-memory card-name index for exact/prefix catalog lookups."""
     global _CACHE_INDEX, _CACHE_NAMES
     index: dict[str, list[dict]] = {}
     if data:
@@ -133,6 +155,7 @@ def catalog_status() -> dict:
                 "count": 0,
                 "synced_at": None,
                 "age_seconds": None,
+                "freshness": "missing",
                 "path": str(path),
                 "persistent_hint": str(path).startswith("/data/"),
             }
@@ -143,6 +166,7 @@ def catalog_status() -> dict:
             "count": len(data.get("results") or []),
             "synced_at": synced_at or None,
             "age_seconds": age,
+            "freshness": _freshness(age),
             "category_count": int(data.get("category_count") or 0),
             "failed_category_count": int(data.get("failed_category_count") or 0),
             "path": str(path),
@@ -160,14 +184,13 @@ def search_catalog(query: str, limit: int = 1500) -> tuple[list[dict], dict]:
         if not needle:
             return [], catalog_status()
 
-        results = []
+        results: list[dict] = []
 
-        # O(1) exact lookup, then binary-search only the matching normalized
-        # names for prefix queries. This replaces a full 60k-row scan per search.
+        # O(1) exact lookup, then binary-search only matching normalized names.
         for row in _CACHE_INDEX.get(needle, []):
-            results.append(dict(row))
+            results.append(normalize_listing_dict(row))
             if len(results) >= limit:
-                return results, catalog_status()
+                return dedupe_listing_dicts(results), catalog_status()
 
         start = bisect_left(_CACHE_NAMES, needle)
         end = bisect_left(_CACHE_NAMES, needle + "\uffff")
@@ -175,15 +198,16 @@ def search_catalog(query: str, limit: int = 1500) -> tuple[list[dict], dict]:
             if name == needle:
                 continue
             for row in _CACHE_INDEX.get(name, []):
-                results.append(dict(row))
+                results.append(normalize_listing_dict(row))
                 if len(results) >= limit:
-                    return results, catalog_status()
+                    return dedupe_listing_dicts(results), catalog_status()
 
-        return results, catalog_status()
+        return dedupe_listing_dicts(results), catalog_status()
 
 
 def begin_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
     with _LOCK:
+        cleaned = _cleanup_staging_files()
         path = _staging_path(sync_id)
         meta_path = _staging_meta_path(sync_id)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,10 +215,10 @@ def begin_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
         meta = {
             "sync_id": sync_id,
             "started_at": time.time(),
-            **(metadata or {}),
+            **_safe_metadata(metadata),
         }
         meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-        return {"ok": True, "sync_id": sync_id}
+        return {"ok": True, "sync_id": sync_id, "stale_staging_removed": cleaned}
 
 
 def append_batch(sync_id: str, rows: list[dict]) -> dict:
@@ -207,7 +231,7 @@ def append_batch(sync_id: str, rows: list[dict]) -> dict:
     for raw in rows:
         if not isinstance(raw, dict):
             continue
-        row = dict(raw)
+        row = normalize_listing_dict(raw)
         row["store"] = "Mercadia"
         if _is_in_stock(row):
             cleaned.append(row)
@@ -223,6 +247,35 @@ def append_batch(sync_id: str, rows: list[dict]) -> dict:
     return {"ok": True, "accepted": len(cleaned)}
 
 
+def _validate_publish_size(new_count: int, current_count: int) -> None:
+    """Reject suspiciously incomplete syncs without replacing a healthy catalog."""
+    min_count = max(0, int(getattr(settings, "MERCADIA_CATALOG_MIN_PUBLISH_COUNT", 15000)))
+    try:
+        min_ratio = float(getattr(settings, "MERCADIA_CATALOG_MIN_PUBLISH_RATIO", 0.65))
+    except (TypeError, ValueError):
+        min_ratio = 0.65
+    min_ratio = min(1.0, max(0.0, min_ratio))
+
+    ratio = new_count / current_count if current_count else 1.0
+    too_small_absolute = min_count > 0 and new_count < min_count
+    too_small_relative = current_count > 0 and ratio < min_ratio
+    if too_small_absolute or too_small_relative:
+        previous_text = str(current_count) if current_count else "sin catálogo previo"
+        raise ValueError(
+            "Catálogo Mercadia rechazado por seguridad: "
+            f"nuevo={new_count}, anterior={previous_text}, ratio={ratio:.2f}. "
+            "Se conserva el catálogo anterior si existe."
+        )
+
+
+def _discard_staging(sync_id: str) -> None:
+    for path in (_staging_path(sync_id), _staging_meta_path(sync_id)):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
     global _CACHE_DATA, _CACHE_MTIME
     with _LOCK:
@@ -230,7 +283,7 @@ def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
         if not staging.exists():
             raise FileNotFoundError("sync no iniciado")
 
-        unique: dict[str, dict] = {}
+        rows: list[dict] = []
         with staging.open("r", encoding="utf-8") as handle:
             for line in handle:
                 line = line.strip()
@@ -240,12 +293,14 @@ def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
                     row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(row, dict) or not _is_in_stock(row):
+                if not isinstance(row, dict):
                     continue
+                row = normalize_listing_dict(row)
                 row["store"] = "Mercadia"
-                unique[_dedupe_key(row)] = row
+                if _is_in_stock(row):
+                    rows.append(row)
 
-        rows = list(unique.values())
+        rows = dedupe_listing_dicts(rows)
         rows.sort(
             key=lambda r: (
                 _normalize(r.get("card_name")),
@@ -255,28 +310,29 @@ def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
                 str(r.get("price") or ""),
             )
         )
+
+        current = _load_from_disk()
+        current_count = len(current.get("results") or []) if current else 0
+        try:
+            _validate_publish_size(len(rows), current_count)
+        except ValueError:
+            _discard_staging(sync_id)
+            raise
+
         now = time.time()
         payload = {
-            "version": 1,
+            "version": 2,
             "synced_at": now,
             "count": len(rows),
             "results": rows,
-            **(metadata or {}),
+            **_safe_metadata(metadata),
         }
 
         final_path = catalog_path()
         tmp_path = final_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp_path, final_path)
-
-        try:
-            staging.unlink()
-        except OSError:
-            pass
-        try:
-            _staging_meta_path(sync_id).unlink()
-        except OSError:
-            pass
+        _discard_staging(sync_id)
 
         _CACHE_DATA = payload
         _CACHE_MTIME = final_path.stat().st_mtime
@@ -285,6 +341,8 @@ def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
             "ok": True,
             "sync_id": sync_id,
             "count": len(rows),
+            "previous_count": current_count,
             "synced_at": now,
+            "freshness": "fresh",
             "path": str(final_path),
         }

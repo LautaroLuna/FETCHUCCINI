@@ -80,6 +80,15 @@ else:
     MERCADIA_CATALOG_DIR = BASE_DIR / ".data" / "fetchuccini"
 MERCADIA_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
 
+# v0.35: catalog freshness / publish safety. The Windows sync normally runs
+# every 6 hours, so 12h is a warning and 36h is treated as stale. A suspicious
+# full-catalog shrink is rejected server-side and the last good snapshot stays.
+MERCADIA_CATALOG_WARN_AGE_SECONDS = int(os.environ.get("MERCADIA_CATALOG_WARN_AGE_SECONDS", 12 * 60 * 60))
+MERCADIA_CATALOG_STALE_AGE_SECONDS = int(os.environ.get("MERCADIA_CATALOG_STALE_AGE_SECONDS", 36 * 60 * 60))
+MERCADIA_CATALOG_MIN_PUBLISH_COUNT = int(os.environ.get("MERCADIA_CATALOG_MIN_PUBLISH_COUNT", 15000))
+MERCADIA_CATALOG_MIN_PUBLISH_RATIO = float(os.environ.get("MERCADIA_CATALOG_MIN_PUBLISH_RATIO", "0.65"))
+MERCADIA_STAGING_MAX_AGE_SECONDS = int(os.environ.get("MERCADIA_STAGING_MAX_AGE_SECONDS", 24 * 60 * 60))
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -93,6 +102,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "searchapp.middleware.ResponseSecurityHeadersMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -173,3 +183,9 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+# Start HSTS conservatively; Railway/Render terminate HTTPS before Django.
+SECURE_HSTS_SECONDS = 3600 if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+SECURE_HSTS_PRELOAD = False

@@ -275,9 +275,17 @@ def _upload_catalog(base_url: str, headers: dict, rows: list[dict], metadata: di
         headers=headers,
         timeout=90,
     )
+    if finish.status_code == 409:
+        try:
+            detail = (finish.json() or {}).get("error") or finish.text
+        except ValueError:
+            detail = finish.text
+        raise RuntimeError(f"Railway conservó el catálogo anterior: {detail}")
     finish.raise_for_status()
     data = finish.json()
-    print(f"[OK] Catálogo publicado: {data.get('count', len(rows))} publicaciones en stock.")
+    previous = data.get("previous_count")
+    previous_text = f" (anterior: {previous})" if previous not in (None, 0) else ""
+    print(f"[OK] Catálogo publicado: {data.get('count', len(rows))} publicaciones en stock{previous_text}.")
 
 
 def main() -> int:

@@ -3,7 +3,13 @@ import json
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
+
+
+_APOSTROPHES_RE = re.compile(r"[\u2018\u2019\u201a\u201b\u2032\u02bc\u0060\u00b4]")
+_DASHES_RE = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]")
+_ZERO_WIDTH_RE = re.compile(r"[\u200b\u200c\u200d\ufeff]")
+_SPLIT_RE = re.compile(r"\s*/+\s*")
 
 
 def first(value, default=None):
@@ -47,47 +53,114 @@ def normalize_space(text: str | None) -> str:
 
 
 def strip_diacritics(text: str | None) -> str:
-    """Return text without combining accent marks, preserving readable casing.
-
-    Stores do not always keep MTG card names exactly as Scryfall writes them.
-    For example, Scryfall uses ``Glóin the Mighty`` while some shops publish
-    ``Gloin the Mighty``.  We keep the canonical spelling for the UI, but use
-    this folded form for matching/search fallbacks.
-    """
+    """Return text without combining accent marks, preserving readable casing."""
     normalized = unicodedata.normalize("NFKD", str(text or ""))
     return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
 
+def normalize_card_punctuation(text: str | None) -> str:
+    """Normalize punctuation variants commonly seen in MTG storefront names.
+
+    Storefronts frequently replace curly apostrophes/dashes or write split-card
+    separators differently.  Keep this function display-friendly so it can also
+    be used to generate safe fallback query variants.
+    """
+    value = unicodedata.normalize("NFKC", str(text or ""))
+    value = _ZERO_WIDTH_RE.sub("", value)
+    value = _APOSTROPHES_RE.sub("'", value)
+    value = _DASHES_RE.sub("-", value)
+    value = value.replace("／", "/")
+    value = _SPLIT_RE.sub(" // ", value)
+    return normalize_space(value)
+
+
 def normalize_card_search_text(text: str | None) -> str:
-    """Normalize card-name text for accent-insensitive comparisons."""
-    return normalize_space(strip_diacritics(text)).casefold()
+    """Canonical comparison/cache key for MTG card names.
+
+    The key intentionally ignores diacritics and harmless punctuation
+    differences while preserving the split-card separator. Examples that map to
+    the same key include ``Glóin``/``Gloin`` and ``Urza’s``/``Urza's``.
+    """
+    value = strip_diacritics(normalize_card_punctuation(text)).casefold()
+    value = value.replace("'", "")
+    value = re.sub(r"\s*//\s*", " // ", value)
+    value = re.sub(r"[-_.:,;!?()\[\]{}\"“”]+", " ", value)
+    value = re.sub(r"[^\w/&+*# //]+", " ", value, flags=re.UNICODE)
+    return normalize_space(value)
+
+
+def _append_unique(values: list[str], value: str | None) -> None:
+    value = normalize_space(value)
+    if not value:
+        return
+    key = value.casefold()
+    if all(existing.casefold() != key for existing in values):
+        values.append(value)
 
 
 def search_query_variants(query: str | None) -> list[str]:
-    """Return the canonical query plus an accent-folded fallback when useful."""
+    """Return increasingly tolerant storefront query variants.
+
+    The canonical Scryfall spelling is always attempted first.  Fallbacks are
+    only useful when the previous store query yielded zero purchasable rows.
+    This keeps ordinary searches to a single request while covering accents,
+    curly apostrophes, Unicode dashes and split-card separators.
+    """
     original = normalize_space(query)
     if not original:
         return []
-    folded = normalize_space(strip_diacritics(original))
-    variants = [original]
-    if folded and folded.casefold() != original.casefold():
-        variants.append(folded)
-    return variants
+
+    variants: list[str] = []
+    _append_unique(variants, original)
+
+    punctuation = normalize_card_punctuation(original)
+    _append_unique(variants, punctuation)
+
+    folded = normalize_space(strip_diacritics(punctuation))
+    _append_unique(variants, folded)
+
+    # Some shop search engines index split/DFC cards under a single slash or
+    # only under the front face. These variants are attempted last.
+    if " // " in punctuation:
+        _append_unique(variants, punctuation.replace(" // ", " / "))
+        front = punctuation.split(" // ", 1)[0]
+        _append_unique(variants, front)
+        _append_unique(variants, strip_diacritics(front))
+
+    return variants[:6]
 
 
 def exactish_card_name(candidate: str | None, query: str) -> bool:
-    """Match card names by prefix, case- and accent-insensitively.
+    """Match card names by prefix using MTG-aware normalization.
 
-    Fetchuccini treats the search box as a prefix search: "lightning" may
-    return Lightning Bolt, Lightning Axe, Lightning Helix, etc. Exact searches
-    still work because an exact name is naturally also a prefix of itself.
-
-    Accent folding is intentional because shops frequently publish MTG names
-    without the diacritics used by Scryfall (e.g. ``Glóin`` vs ``Gloin``).
+    Prefix behavior is deliberate: ``lightning`` may return Lightning Bolt,
+    Lightning Axe, etc.  For split cards, a storefront that exposes only the
+    exact front-face name is also accepted after the full-name search fallback.
     """
     c = normalize_card_search_text(candidate)
     q = normalize_card_search_text(query)
-    return bool(c and q and c.startswith(q))
+    if not c or not q:
+        return False
+    if c.startswith(q):
+        return True
+    if " // " in q:
+        front = q.split(" // ", 1)[0]
+        return c == front
+    return False
+
+
+def safe_http_url(value: str | None) -> str | None:
+    """Return only absolute http(s) URLs suitable for href/src attributes."""
+    text = normalize_space(value)
+    if not text:
+        return None
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return None
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+        return None
+    return text
 
 
 def json_attr(value: str | None):

@@ -29,3 +29,9 @@ class FrontendResponsiveContractTests(TestCase):
         self.assertLess((static_dir / "fetchuccini-forge-icon.png").stat().st_size, 600_000)
         self.assertTrue((static_dir / "fetchuccini-forge-icon-32.png").exists())
         self.assertTrue((static_dir / "fetchuccini-forge-icon-180.png").exists())
+
+    def test_mercadia_catalog_freshness_has_visible_states(self):
+        js = (ROOT / "searchapp/static/searchapp/app.js").read_text(encoding="utf-8")
+        self.assertIn("catalog-warning", js)
+        self.assertIn("catalog-stale", js)
+        self.assertIn("catálogo desactualizado", js)

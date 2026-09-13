@@ -216,3 +216,13 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Si una categoría falla, el Bridge conserva el último snapshot local de esa categoría.
 - Para persistencia real entre deploys/restarts de Railway, montar un Volume en `/data`; la app usará `/data/fetchuccini/mercadia_catalog.json` automáticamente.
 - `mercadia_bridge_setup.bat` configura la tarea cada 1 hora y `mercadia_bridge_run.bat` permite forzar una sincronización inmediata.
+
+## v0.35 — normalización, deduplicación y seguridad
+
+- Normalización MTG v2 para acentos, apóstrofes, guiones y split cards.
+- Caché de búsquedas normalizada para evitar snapshots duplicados del mismo nombre.
+- Normalización común de idioma, condición, acabado y moneda.
+- Deduplicación de variantes repetidas por tienda.
+- Guard de Mercadia para no reemplazar un catálogo sano por una sincronización sospechosamente incompleta.
+- Estados de antigüedad del catálogo Mercadia y limpieza automática de staging abandonado.
+- Security headers adicionales y rate limiting usando `X-Real-IP` en Railway.

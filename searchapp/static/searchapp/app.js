@@ -625,11 +625,13 @@ function formatAge(seconds){
   const value = Math.max(0, Number(seconds) || 0);
   if(value < 60) return `${Math.round(value)} s`;
   if(value < 3600) return `${Math.round(value / 60)} min`;
-  return `${Math.round(value / 3600)} h`;
+  if(value < 86400) return `${Math.round(value / 3600)} h`;
+  const days = value / 86400;
+  return `${days < 10 ? days.toFixed(1).replace('.0','') : Math.round(days)} d`;
 }
 
 function isStoreFinished(state){
-  return ['done','cached','error','stale-error'].includes(state?.status);
+  return ['done','cached','error','stale-error','catalog-warning','catalog-stale'].includes(state?.status);
 }
 
 const ONLINE_CONNECTION_ERROR = 'No se pudo conectar a la pagina online';
@@ -653,6 +655,12 @@ function renderStoreStates(){
 
     if(state.status === 'bridge-pending'){
       return `<span class="pill loading">${esc(label)}: esperando sincronización…</span>`;
+    }
+    if(state.status === 'catalog-warning'){
+      return `<span class="pill stale"${title}>${esc(label)}: ${count} · catálogo hace ${age}</span>`;
+    }
+    if(state.status === 'catalog-stale'){
+      return `<span class="pill error"${title}>${esc(label)}: ${count} · catálogo desactualizado · ${age}</span>`;
     }
     if(state.bridge){
       if(state.status === 'refreshing'){
@@ -724,6 +732,26 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
       age_seconds: 0,
       bridge: true,
       error: null,
+    });
+  }else if(data.bridge_catalog && data.catalog_freshness === 'stale'){
+    storeStates.set(key, {
+      status: 'catalog-stale',
+      label,
+      count: (data.results || []).length,
+      elapsed_ms: info.elapsed_ms || 0,
+      age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
+      bridge: true,
+      error: 'El catálogo de Mercadia está desactualizado.',
+    });
+  }else if(data.bridge_catalog && data.catalog_freshness === 'warning'){
+    storeStates.set(key, {
+      status: 'catalog-warning',
+      label,
+      count: (data.results || []).length,
+      elapsed_ms: info.elapsed_ms || 0,
+      age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
+      bridge: true,
+      error: 'El catálogo de Mercadia está más antiguo de lo habitual.',
     });
   }else if(data.stale){
     storeStates.set(key, {

@@ -2,6 +2,8 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 from typing import Any
 
+from .utils import safe_http_url
+
 
 @dataclass(slots=True)
 class Listing:
@@ -30,6 +32,10 @@ class Listing:
         data = asdict(self)
         if self.price is not None:
             data["price"] = str(self.price)
+        # Only http(s) destinations are ever exposed to the browser. This is a
+        # defense-in-depth check on top of adapter/listing normalization.
+        data["url"] = safe_http_url(data.get("url"))
+        data["image_url"] = safe_http_url(data.get("image_url"))
         # Raw is useful while developing adapters, but not sent to the browser.
         data.pop("raw", None)
         return data

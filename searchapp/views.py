@@ -22,6 +22,8 @@ from .services.mercadia_catalog import (
     finish_sync as mercadia_catalog_finish_sync,
     search_catalog as mercadia_catalog_search,
 )
+from .services.listing_normalization import dedupe_listing_dicts, normalize_listing_dict
+from .services.utils import normalize_card_search_text
 
 
 FRESH_CACHE_SECONDS = 5 * 60
@@ -34,7 +36,7 @@ MERCADIA_BRIDGE_FRESH_SECONDS = 40 * 60
 MERCADIA_BRIDGE_STALE_SECONDS = 7 * 24 * 60 * 60
 MERCADIA_BRIDGE_PENDING_SECONDS = 7 * 24 * 60 * 60
 MERCADIA_BRIDGE_ACTIVE_SECONDS = 7 * 24 * 60 * 60
-MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v2:pending"
+MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v3:pending"
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +49,15 @@ RATE_LIMITS = {
 
 
 def _client_ip(request) -> str:
-    forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")[-1].strip()
-    return forwarded or (request.META.get("REMOTE_ADDR") or "unknown")
+    # Railway exposes the original remote address as X-Real-IP. Keep
+    # X-Forwarded-For/REMOTE_ADDR fallbacks for Render and local development.
+    real_ip = (request.META.get("HTTP_X_REAL_IP") or "").strip()
+    if real_ip:
+        return real_ip
+    forwarded = [part.strip() for part in (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",") if part.strip()]
+    if forwarded:
+        return forwarded[0]
+    return request.META.get("REMOTE_ADDR") or "unknown"
 
 
 def _rate_limit_response(request, scope: str):
@@ -148,9 +157,11 @@ def _selected_store_keys(request, aggregator):
 
 
 def _store_cache_keys(query: str, store_key: str):
-    raw = f"{query.casefold()}|{store_key}".encode("utf-8")
+    # v0.35: accent/punctuation variants share the same snapshot.
+    normalized = normalize_card_search_text(query) or query.casefold()
+    raw = f"{normalized}|{store_key}".encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    return f"store-search:v18:fresh:{digest}", f"store-search:v18:stale:{digest}"
+    return f"store-search:v19:fresh:{digest}", f"store-search:v19:stale:{digest}"
 
 
 def _age_seconds(snapshot):
@@ -161,10 +172,11 @@ def _age_seconds(snapshot):
 
 
 def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
-    results = [
-        row for row in snapshot.get("results", [])
-        if _is_in_stock_result(row)
-    ]
+    results = dedupe_listing_dicts(
+        normalize_listing_dict(row)
+        for row in snapshot.get("results", [])
+        if isinstance(row, dict) and _is_in_stock_result(row)
+    )
     store_info = dict(snapshot.get("store", {}))
     store_info["count"] = len(results)
     age = _age_seconds(snapshot)
@@ -200,7 +212,7 @@ def _mercadia_bridge_authorized(request):
 
 
 def _queue_mercadia_bridge_query(query: str, *, due_now=True):
-    normalized = " ".join(query.casefold().split())
+    normalized = normalize_card_search_text(query) or " ".join(query.casefold().split())
     now = float(time.time())
     pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
     previous = pending.get(normalized) or {}
@@ -219,7 +231,7 @@ def _queue_mercadia_bridge_query(query: str, *, due_now=True):
 
 
 def _touch_mercadia_bridge_query(query: str):
-    normalized = " ".join(query.casefold().split())
+    normalized = normalize_card_search_text(query) or " ".join(query.casefold().split())
     now = float(time.time())
     pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
     previous = pending.get(normalized)
@@ -240,7 +252,7 @@ def _touch_mercadia_bridge_query(query: str):
 
 
 def _schedule_next_mercadia_bridge_sync(query: str):
-    normalized = " ".join(query.casefold().split())
+    normalized = normalize_card_search_text(query) or " ".join(query.casefold().split())
     now = float(time.time())
     pending = cache.get(MERCADIA_BRIDGE_PENDING_KEY) or {}
     previous = pending.get(normalized) or {}
@@ -309,6 +321,9 @@ def _mercadia_catalog_payload(query: str):
     if not status.get("ready"):
         return None
     age = int(status.get("age_seconds") or 0)
+    freshness = status.get("freshness") or "unknown"
+    stale = freshness == "stale"
+    warning = freshness == "warning"
     return {
         "query": query,
         "store_key": "mercadia",
@@ -320,8 +335,8 @@ def _mercadia_catalog_payload(query: str):
             "error": None,
         },
         "cached": True,
-        "fresh": True,
-        "stale": False,
+        "fresh": not stale,
+        "stale": stale,
         "age_seconds": age,
         "bridge": True,
         "bridge_catalog": True,
@@ -329,6 +344,9 @@ def _mercadia_catalog_payload(query: str):
         "bridge_age_seconds": age,
         "catalog_count": status.get("count", 0),
         "catalog_category_count": status.get("category_count", 0),
+        "catalog_failed_category_count": status.get("failed_category_count", 0),
+        "catalog_freshness": freshness,
+        "catalog_warning": warning,
     }
 
 
@@ -392,7 +410,11 @@ def mercadia_catalog_finish_api(request):
     sync_id = str(payload.get("sync_id") or "").strip()
     try:
         result = mercadia_catalog_finish_sync(sync_id, metadata=payload.get("metadata") or {})
-    except (ValueError, OSError, FileNotFoundError) as exc:
+    except ValueError as exc:
+        # A suspiciously small full sync is a conflict with the last known-good
+        # catalog, not malformed JSON. The previous catalog remains untouched.
+        return JsonResponse({"error": str(exc), "catalog_preserved": True}, status=409)
+    except (OSError, FileNotFoundError) as exc:
         return JsonResponse({"error": str(exc)}, status=400)
     return JsonResponse(result)
 
@@ -439,10 +461,11 @@ def mercadia_bridge_push_api(request):
     for row in raw_results[:500]:
         if not isinstance(row, dict):
             continue
-        row = dict(row)
+        row = normalize_listing_dict(row)
         row["store"] = "Mercadia"
         if _is_in_stock_result(row):
             cleaned.append(row)
+    cleaned = dedupe_listing_dicts(cleaned)
 
     try:
         elapsed_ms = max(0, int(payload.get("elapsed_ms") or 0))
@@ -491,9 +514,9 @@ def autocomplete_api(request):
     if len(query) > 80:
         return JsonResponse({"query": query, "suggestions": []})
 
-    normalized = query.casefold()
+    normalized = normalize_card_search_text(query) or query.casefold()
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    cache_key = f"autocomplete:v16:{digest}"
+    cache_key = f"autocomplete:v17:{digest}"
     cached = cache.get(cache_key)
     if cached is not None:
         return JsonResponse({"query": query, "suggestions": cached, "cached": True})
@@ -680,6 +703,7 @@ def search_api(request):
         results.extend(catalog_payload.get("results") or [])
         store_payloads.append(catalog_payload.get("store") or {"store": "Mercadia", "count": 0, "elapsed_ms": 0, "error": None})
 
+    results = dedupe_listing_dicts(results)
     payload = {
         "query": query,
         "count": len(results),
