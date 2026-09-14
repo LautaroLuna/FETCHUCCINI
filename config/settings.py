@@ -3,6 +3,13 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+FETCHUCCINI_VERSION = "0.36"
+FETCHUCCINI_STORE_CONCURRENCY = max(1, int(os.environ.get("FETCHUCCINI_STORE_CONCURRENCY", "4")))
+FETCHUCCINI_GLOBAL_STORE_CONCURRENCY = max(1, int(os.environ.get("FETCHUCCINI_GLOBAL_STORE_CONCURRENCY", "6")))
+FETCHUCCINI_STORE_GATE_WAIT_SECONDS = max(1.0, float(os.environ.get("FETCHUCCINI_STORE_GATE_WAIT_SECONDS", "20")))
+FETCHUCCINI_REFRESH_LOCK_SECONDS = max(10, int(os.environ.get("FETCHUCCINI_REFRESH_LOCK_SECONDS", "60")))
+FETCHUCCINI_REFRESH_WAIT_SECONDS = max(0.2, float(os.environ.get("FETCHUCCINI_REFRESH_WAIT_SECONDS", "2.5")))
+
 # Local development keeps a harmless fallback key. Production (Render) receives
 # a generated SECRET_KEY through environment variables.
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
@@ -102,6 +109,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "searchapp.middleware.RequestObservabilityMiddleware",
     "searchapp.middleware.ResponseSecurityHeadersMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -160,22 +168,40 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Render Free has an ephemeral filesystem. /tmp is appropriate for the short
-# cache used by Fetchuccini; local development keeps the cache in the project.
-_default_cache = "/tmp/fetchuccini-cache" if (is_render or is_railway) else str(BASE_DIR / ".cache" / "fetchuccini")
-CACHE_DIR = Path(os.environ.get("FETCHUCCINI_CACHE_DIR", _default_cache))
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
-        "LOCATION": str(CACHE_DIR),
-        "OPTIONS": {
-            "MAX_ENTRIES": 5000,
-            "CULL_FREQUENCY": 3,
-        },
+# v0.36: Redis is optional but preferred in production. With REDIS_URL set,
+# cache/rate-limits/circuit-breakers are shared across Gunicorn workers and
+# future Railway replicas. Without Redis the app keeps the proven file cache.
+REDIS_URL = (os.environ.get("REDIS_URL") or "").strip()
+if REDIS_URL:
+    FETCHUCCINI_CACHE_BACKEND = "redis"
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "KEY_PREFIX": "fetchuccini",
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                "IGNORE_EXCEPTIONS": True,
+                "SOCKET_CONNECT_TIMEOUT": 2,
+                "SOCKET_TIMEOUT": 2,
+            },
+        }
     }
-}
+else:
+    FETCHUCCINI_CACHE_BACKEND = "file"
+    _default_cache = "/tmp/fetchuccini-cache" if (is_render or is_railway) else str(BASE_DIR / ".cache" / "fetchuccini")
+    CACHE_DIR = Path(os.environ.get("FETCHUCCINI_CACHE_DIR", _default_cache))
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": str(CACHE_DIR),
+            "OPTIONS": {
+                "MAX_ENTRIES": 5000,
+                "CULL_FREQUENCY": 3,
+            },
+        }
+    }
 
 # Render terminates TLS before proxying requests to Gunicorn.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
@@ -189,3 +215,30 @@ SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
 SECURE_HSTS_SECONDS = 3600 if not DEBUG else 0
 SECURE_HSTS_INCLUDE_SUBDOMAINS = False
 SECURE_HSTS_PRELOAD = False
+
+# v0.36: compact production observability. Keep Django/Gunicorn defaults and
+# raise only Fetchuccini's operational loggers to INFO.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {"class": "logging.StreamHandler"},
+    },
+    "loggers": {
+        "fetchuccini.requests": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "searchapp.services.aggregator": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "searchapp.services.resilience": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}

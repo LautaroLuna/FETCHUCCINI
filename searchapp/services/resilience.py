@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
+import threading
+from contextlib import contextmanager
+
+from django.conf import settings
 
 from django.core.cache import cache
 
@@ -65,3 +69,41 @@ def circuit_record_failure(store_key: str, error: str | None = None) -> dict:
     payload = {"failures": failures, "open_until": open_until}
     cache.set(_key(store_key), payload, CIRCUIT_STATE_SECONDS)
     return payload
+
+
+class StoreConcurrencyBusy(RuntimeError):
+    pass
+
+
+_GATE_LOCK = threading.Lock()
+_GATE_SEMAPHORE = None
+_GATE_LIMIT = None
+
+
+def _store_gate():
+    global _GATE_SEMAPHORE, _GATE_LIMIT
+    limit = max(1, int(getattr(settings, "FETCHUCCINI_GLOBAL_STORE_CONCURRENCY", 6)))
+    with _GATE_LOCK:
+        if _GATE_SEMAPHORE is None or _GATE_LIMIT != limit:
+            _GATE_SEMAPHORE = threading.BoundedSemaphore(limit)
+            _GATE_LIMIT = limit
+        return _GATE_SEMAPHORE, limit
+
+
+@contextmanager
+def store_request_slot():
+    """Bound total outbound store work per process to protect hosted threads."""
+    semaphore, limit = _store_gate()
+    wait_seconds = max(1.0, float(getattr(settings, "FETCHUCCINI_STORE_GATE_WAIT_SECONDS", 20)))
+    acquired = semaphore.acquire(timeout=wait_seconds)
+    if not acquired:
+        raise StoreConcurrencyBusy(f"limite global {limit} ocupado")
+    try:
+        yield
+    finally:
+        semaphore.release()
+
+
+def store_gate_limit() -> int:
+    _semaphore, limit = _store_gate()
+    return limit

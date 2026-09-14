@@ -226,3 +226,13 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - Guard de Mercadia para no reemplazar un catálogo sano por una sincronización sospechosamente incompleta.
 - Estados de antigüedad del catálogo Mercadia y limpieza automática de staging abandonado.
 - Security headers adicionales y rate limiting usando `X-Real-IP` en Railway.
+
+## v0.36 — Redis, escalabilidad y observabilidad
+
+- Redis opcional mediante `REDIS_URL`; si no está configurado se mantiene el cache de archivos.
+- Cache, rate limiting, circuit breaker, métricas y locks de refresh pueden compartirse entre workers usando Redis.
+- Single-flight evita buena parte de las consultas duplicadas simultáneas a una misma tienda/carta.
+- Límite global de trabajos externos por proceso y concurrencia configurable del agregador.
+- `/health/` ampliado con versión, uptime, cache, catálogo Mercadia y circuit breakers; `?details=1` suma métricas por tienda.
+- `X-Request-ID`, `X-Fetchuccini-Version` y `Server-Timing` para diagnóstico.
+- Gunicorn se configura desde `gunicorn.conf.py` y permite ajustar workers/threads por variables de entorno.

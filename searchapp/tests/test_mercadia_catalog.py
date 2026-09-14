@@ -134,3 +134,35 @@ class MercadiaCatalogSafetyTests(TestCase):
             result = mercadia_catalog.begin_sync("new-sync")
         self.assertFalse(stale.exists())
         self.assertGreaterEqual(result["stale_staging_removed"], 1)
+
+
+class MercadiaCatalogLightweightStatusTests(TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        mercadia_catalog._CACHE_DATA = None
+        mercadia_catalog._CACHE_MTIME = None
+        mercadia_catalog._CACHE_INDEX = {}
+        mercadia_catalog._CACHE_NAMES = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_lightweight_status_reads_small_prefix_without_loading_catalog(self):
+        import time
+        path = Path(self.tmp.name) / "mercadia_catalog.json"
+        synced_at = time.time() - 60
+        payload = {
+            "version": 2,
+            "synced_at": synced_at,
+            "count": 2,
+            "results": [
+                {"store":"Mercadia","card_name":"A","available":True,"stock":1},
+                {"store":"Mercadia","card_name":"B","available":True,"stock":1},
+            ],
+        }
+        path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        with override_settings(MERCADIA_CATALOG_DIR=Path(self.tmp.name)):
+            status = mercadia_catalog.catalog_status_lightweight()
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["count"], 2)
+        self.assertIsNone(mercadia_catalog._CACHE_DATA)

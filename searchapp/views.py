@@ -13,16 +13,19 @@ from django.shortcuts import render
 
 from .services.aggregator import SearchAggregator
 from .services.scryfall import ScryfallService
-from .services.resilience import circuit_state
+from .services.resilience import circuit_state, store_gate_limit
 from .services.mercadia_catalog import (
     append_batch as mercadia_catalog_append_batch,
     begin_sync as mercadia_catalog_begin_sync,
     catalog_status as mercadia_catalog_status,
+    catalog_status_lightweight as mercadia_catalog_health_status,
     catalog_path as mercadia_catalog_path,
     finish_sync as mercadia_catalog_finish_sync,
     search_catalog as mercadia_catalog_search,
 )
 from .services.listing_normalization import dedupe_listing_dicts, normalize_listing_dict
+from .services.cache_runtime import cache_health
+from .services.metrics import metrics_snapshot, record_rate_limit, record_store_result
 from .services.utils import normalize_card_search_text
 
 
@@ -39,6 +42,7 @@ MERCADIA_BRIDGE_ACTIVE_SECONDS = 7 * 24 * 60 * 60
 MERCADIA_BRIDGE_PENDING_KEY = "mercadia-bridge:v3:pending"
 
 logger = logging.getLogger(__name__)
+_APP_STARTED_AT = time.time()
 
 RATE_LIMITS = {
     "autocomplete": (90, 60),
@@ -67,17 +71,24 @@ def _rate_limit_response(request, scope: str):
     identity = _client_ip(request)
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
     key = f"rate:v1:{scope}:{digest}:{bucket}"
-    if cache.add(key, 1, timeout=window + 5):
-        count = 1
-    else:
-        try:
-            count = cache.incr(key)
-        except ValueError:
-            cache.set(key, 1, timeout=window + 5)
+    try:
+        if cache.add(key, 1, timeout=window + 5):
             count = 1
-    if count <= limit:
+        else:
+            try:
+                count = cache.incr(key)
+            except ValueError:
+                cache.set(key, 1, timeout=window + 5)
+                count = 1
+    except Exception as exc:
+        # Rate limiting must fail open if the cache backend is temporarily
+        # unavailable; /health/ will report the degraded cache separately.
+        logger.warning("Rate limit cache unavailable scope=%s error=%s", scope, type(exc).__name__)
+        return None
+    if not isinstance(count, int) or count <= limit:
         return None
     retry_after = max(1, window - (now % window))
+    record_rate_limit(scope)
     logger.warning("Rate limit exceeded scope=%s ip_hash=%s count=%s", scope, digest, count)
     response = JsonResponse({
         "error": "Demasiadas búsquedas en poco tiempo. Probá de nuevo en unos segundos.",
@@ -88,26 +99,51 @@ def _rate_limit_response(request, scope: str):
 
 
 def health(request):
-    """Lightweight health check; never contacts stores or parses the big catalog."""
-    path = mercadia_catalog_path()
+    """Operational status without contacting any external store."""
     aggregator = SearchAggregator()
+    store_keys = list(aggregator.adapter_classes)
     open_circuits = {}
     now = time.time()
-    for key in aggregator.adapter_classes:
+    for key in store_keys:
         state = circuit_state(key)
         if state.get("open_until", 0) > now:
             open_circuits[key] = max(1, int(state["open_until"] - now))
+
+    catalog = mercadia_catalog_health_status()
+    path = mercadia_catalog_path()
     try:
         catalog_bytes = path.stat().st_size if path.exists() else 0
     except OSError:
         catalog_bytes = 0
-    return JsonResponse({
+
+    cache_status = cache_health()
+    degraded = (
+        not cache_status.get("ok", False)
+        or catalog.get("freshness") == "stale"
+        or (_mercadia_bridge_enabled() and not catalog.get("ready"))
+    )
+    payload = {
         "ok": True,
+        "degraded": bool(degraded),
         "service": "fetchuccini",
-        "mercadia_catalog_ready": catalog_bytes > 0,
+        "version": str(getattr(settings, "FETCHUCCINI_VERSION", "unknown")),
+        "uptime_seconds": max(0, int(now - _APP_STARTED_AT)),
+        "cache": cache_status,
+        "concurrency": {
+            "aggregate_store_workers": max(1, int(getattr(settings, "FETCHUCCINI_STORE_CONCURRENCY", 4))),
+            "global_store_limit_per_process": store_gate_limit(),
+        },
+        "mercadia_catalog_ready": bool(catalog.get("ready")),
         "mercadia_catalog_bytes": catalog_bytes,
+        "mercadia_catalog_count": int(catalog.get("count") or 0),
+        "mercadia_catalog_age_seconds": catalog.get("age_seconds"),
+        "mercadia_catalog_freshness": catalog.get("freshness"),
         "open_store_circuits": open_circuits,
-    })
+        "metrics_available": True,
+    }
+    if (request.GET.get("details") or "").strip().lower() in {"1", "true", "yes"}:
+        payload["metrics"] = metrics_snapshot(store_keys)
+    return JsonResponse(payload)
 
 
 def _disabled_store_keys():
@@ -162,6 +198,57 @@ def _store_cache_keys(query: str, store_key: str):
     raw = f"{normalized}|{store_key}".encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
     return f"store-search:v19:fresh:{digest}", f"store-search:v19:stale:{digest}"
+
+
+def _store_refresh_lock_key(query: str, store_key: str) -> str:
+    normalized = normalize_card_search_text(query) or query.casefold()
+    raw = f"{normalized}|{store_key}".encode("utf-8")
+    return f"store-refresh:v1:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _acquire_store_refresh_lock(query: str, store_key: str) -> tuple[str, bool]:
+    token = secrets.token_hex(8)
+    try:
+        result = cache.add(
+            _store_refresh_lock_key(query, store_key),
+            token,
+            timeout=max(10, int(getattr(settings, "FETCHUCCINI_REFRESH_LOCK_SECONDS", 60))),
+        )
+        # Some tolerant Redis clients return None when Redis is unreachable.
+        # Treat that as fail-open so users do not wait on a lock that was never set.
+        acquired = True if result is None else bool(result)
+        if (
+            not acquired
+            and str(getattr(settings, "FETCHUCCINI_CACHE_BACKEND", "file")) == "redis"
+            and not cache_health().get("ok", False)
+        ):
+            acquired = True
+    except Exception:
+        acquired = True
+    return token, acquired
+
+
+def _release_store_refresh_lock(query: str, store_key: str, token: str) -> None:
+    key = _store_refresh_lock_key(query, store_key)
+    try:
+        # Avoid deleting a newer worker's lock if ours somehow expired first.
+        if cache.get(key) == token:
+            cache.delete(key)
+    except Exception:
+        return
+
+
+def _wait_for_coalesced_snapshot(fresh_key: str, timeout_seconds: float):
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while time.monotonic() < deadline:
+        try:
+            snapshot = cache.get(fresh_key)
+        except Exception:
+            return None
+        if snapshot is not None:
+            return snapshot
+        time.sleep(0.10)
+    return None
 
 
 def _age_seconds(snapshot):
@@ -527,11 +614,7 @@ def autocomplete_api(request):
 
 
 def search_store_api(request):
-    """Fetch one store so results can stream progressively in the browser.
-
-    Fresh cache is returned instantly. If a live refresh fails, the last
-    successful snapshot (up to 24h old) is returned as a stale fallback.
-    """
+    """Fetch one store progressively with cache, coalescing and stale fallback."""
     limited = _rate_limit_response(request, "search_store")
     if limited:
         return limited
@@ -564,13 +647,18 @@ def search_store_api(request):
             "message": "Temporalmente no disponible en la versión online.",
         })
 
-    # v0.29: when a complete Mercadia catalog has been synchronized by the
-    # Windows bridge, answer directly from the local catalog. No request to
-    # mercadiacity.com is needed from Railway and even zero-result searches are
-    # definitive until the next hourly catalog sync.
+    # Mercadia normally answers from the persistent catalog and does not need
+    # an outbound request from Railway.
     if store_key == "mercadia" and _mercadia_bridge_enabled():
         catalog_payload = _mercadia_catalog_payload(query)
         if catalog_payload is not None:
+            record_store_result(
+                store_key,
+                elapsed_ms=0,
+                success=True,
+                source="catalog",
+                count=len(catalog_payload.get("results") or []),
+            )
             return JsonResponse(catalog_payload)
 
     fresh_key, stale_key = _store_cache_keys(query, store_key)
@@ -578,64 +666,104 @@ def search_store_api(request):
     if fresh is not None:
         if store_key == "mercadia" and _mercadia_bridge_enabled() and fresh.get("bridge"):
             _touch_mercadia_bridge_query(query)
-        return JsonResponse(_response_from_snapshot(fresh, fresh=True))
+        payload = _response_from_snapshot(fresh, fresh=True)
+        record_store_result(store_key, elapsed_ms=0, success=True, source="cache", count=len(payload.get("results") or []))
+        return JsonResponse(payload)
 
-    # Mercadia blocks Railway/Render IPs with HTTP 403. In bridge mode, never
-    # keep hammering the origin from the server: queue the requested card and
-    # let the user's trusted Windows bridge refresh it from their home network.
+    # Mercadia legacy bridge mode: queue instead of hammering an origin that
+    # rejects hosted IPs.
     if store_key == "mercadia" and _mercadia_bridge_enabled():
         _queue_mercadia_bridge_query(query)
         stale = cache.get(stale_key)
-        return JsonResponse(_mercadia_bridge_waiting_payload(query, stale_snapshot=stale))
+        payload = _mercadia_bridge_waiting_payload(query, stale_snapshot=stale)
+        record_store_result(
+            store_key,
+            elapsed_ms=0,
+            success=bool(stale),
+            source="stale" if stale else "cache",
+            count=len(payload.get("results") or []),
+        )
+        return JsonResponse(payload)
 
-    rows, run = aggregator.search_store(query, store_key)
-    if run.error:
-        stale = cache.get(stale_key)
-        if stale is not None:
-            return JsonResponse(_response_from_snapshot(
-                stale,
-                stale=True,
-                error=run.error,
-            ))
-        return JsonResponse({
+    # v0.36 single-flight: when several users miss the same cache entry at the
+    # same time, one request refreshes the origin while peers briefly wait for
+    # its snapshot. Redis makes this work across Gunicorn workers/replicas too.
+    stale_before_refresh = cache.get(stale_key)
+    lock_token, lock_acquired = _acquire_store_refresh_lock(query, store_key)
+    if not lock_acquired:
+        coalesced = _wait_for_coalesced_snapshot(
+            fresh_key,
+            float(getattr(settings, "FETCHUCCINI_REFRESH_WAIT_SECONDS", 2.5)),
+        )
+        if coalesced is not None:
+            payload = _response_from_snapshot(coalesced, fresh=True)
+            payload["coalesced"] = True
+            record_store_result(store_key, elapsed_ms=0, success=True, source="coalesced", count=len(payload.get("results") or []))
+            return JsonResponse(payload)
+        if stale_before_refresh is not None:
+            payload = _response_from_snapshot(stale_before_refresh, stale=True)
+            payload["refreshing"] = True
+            payload["coalesced"] = True
+            record_store_result(store_key, elapsed_ms=0, success=True, source="coalesced", count=len(payload.get("results") or []))
+            return JsonResponse(payload)
+
+    try:
+        rows, run = aggregator.search_store(query, store_key)
+        if run.error:
+            stale = stale_before_refresh or cache.get(stale_key)
+            if stale is not None:
+                payload = _response_from_snapshot(stale, stale=True, error=run.error)
+                record_store_result(
+                    store_key,
+                    elapsed_ms=0,
+                    success=True,
+                    source="stale",
+                    count=len(payload.get("results") or []),
+                    count_request=False,
+                )
+                return JsonResponse(payload)
+            return JsonResponse({
+                "query": query,
+                "store_key": store_key,
+                "results": [],
+                "store": {
+                    "store": run.store,
+                    "count": 0,
+                    "elapsed_ms": run.elapsed_ms,
+                    "error": run.error,
+                },
+                "cached": False,
+                "fresh": False,
+                "stale": False,
+                "age_seconds": 0,
+            })
+
+        snapshot = {
             "query": query,
             "store_key": store_key,
-            "results": [],
+            "results": [row.to_dict() for row in rows],
             "store": {
                 "store": run.store,
-                "count": 0,
+                "count": run.count,
                 "elapsed_ms": run.elapsed_ms,
-                "error": run.error,
+                "error": None,
             },
+            "cached_at": time.time(),
+        }
+        fresh_seconds = MAGICDEALERS_FRESH_CACHE_SECONDS if store_key == "magicdealers" else FRESH_CACHE_SECONDS
+        cache.set(fresh_key, snapshot, fresh_seconds)
+        cache.set(stale_key, snapshot, STALE_CACHE_SECONDS)
+
+        return JsonResponse({
+            **snapshot,
             "cached": False,
-            "fresh": False,
+            "fresh": True,
             "stale": False,
             "age_seconds": 0,
         })
-
-    snapshot = {
-        "query": query,
-        "store_key": store_key,
-        "results": [row.to_dict() for row in rows],
-        "store": {
-            "store": run.store,
-            "count": run.count,
-            "elapsed_ms": run.elapsed_ms,
-            "error": None,
-        },
-        "cached_at": time.time(),
-    }
-    fresh_seconds = MAGICDEALERS_FRESH_CACHE_SECONDS if store_key == "magicdealers" else FRESH_CACHE_SECONDS
-    cache.set(fresh_key, snapshot, fresh_seconds)
-    cache.set(stale_key, snapshot, STALE_CACHE_SECONDS)
-
-    return JsonResponse({
-        **snapshot,
-        "cached": False,
-        "fresh": True,
-        "stale": False,
-        "age_seconds": 0,
-    })
+    finally:
+        if lock_acquired:
+            _release_store_refresh_lock(query, store_key, lock_token)
 
 
 def search_cache_api(request):
@@ -656,6 +784,10 @@ def search_cache_api(request):
             catalog_payload = _mercadia_catalog_payload(query)
             if catalog_payload is not None:
                 snapshots.append(catalog_payload)
+                record_store_result(
+                    store_key, elapsed_ms=0, success=True, source="catalog",
+                    count=len(catalog_payload.get("results") or []), count_request=False,
+                )
                 continue
 
         fresh_key, stale_key = _store_cache_keys(query, store_key)
@@ -663,14 +795,24 @@ def search_cache_api(request):
         if fresh is not None:
             if store_key == "mercadia" and _mercadia_bridge_enabled() and fresh.get("bridge"):
                 _touch_mercadia_bridge_query(query)
-            snapshots.append(_response_from_snapshot(fresh, fresh=True))
+            payload = _response_from_snapshot(fresh, fresh=True)
+            snapshots.append(payload)
+            record_store_result(
+                store_key, elapsed_ms=0, success=True, source="cache",
+                count=len(payload.get("results") or []), count_request=False,
+            )
             continue
 
         stale = cache.get(stale_key)
         if stale is not None:
             if store_key == "mercadia" and _mercadia_bridge_enabled() and stale.get("bridge"):
                 _queue_mercadia_bridge_query(query, due_now=True)
-            snapshots.append(_response_from_snapshot(stale, stale=True))
+            payload = _response_from_snapshot(stale, stale=True)
+            snapshots.append(payload)
+            record_store_result(
+                store_key, elapsed_ms=0, success=True, source="stale",
+                count=len(payload.get("results") or []), count_request=False,
+            )
 
     return JsonResponse({"query": query, "stores": snapshots})
 

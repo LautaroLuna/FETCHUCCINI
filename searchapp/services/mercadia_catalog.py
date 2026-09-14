@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from bisect import bisect_left
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,46 @@ def _catalog_dir() -> Path:
 
 def catalog_path() -> Path:
     return _catalog_dir() / "mercadia_catalog.json"
+
+
+def _status_path() -> Path:
+    return _catalog_dir() / "mercadia_catalog.status.json"
+
+
+def _status_payload(data: dict, path: Path) -> dict:
+    synced_at = float(data.get("synced_at") or 0)
+    age = max(0, int(time.time() - synced_at)) if synced_at else None
+    count = int(data.get("count") or len(data.get("results") or []))
+    return {
+        "ready": True,
+        "count": count,
+        "synced_at": synced_at or None,
+        "age_seconds": age,
+        "freshness": _freshness(age),
+        "category_count": int(data.get("category_count") or 0),
+        "failed_category_count": int(data.get("failed_category_count") or 0),
+        "path": str(path),
+        "persistent_hint": str(path).startswith("/data/"),
+    }
+
+
+def _write_status_sidecar(data: dict) -> None:
+    path = catalog_path()
+    payload = _status_payload(data, path)
+    small = {
+        key: payload[key]
+        for key in ("count", "synced_at", "category_count", "failed_category_count")
+    }
+    status_path = _status_path()
+    tmp = status_path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(small, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        os.replace(tmp, status_path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _staging_path(sync_id: str) -> Path:
@@ -159,19 +200,59 @@ def catalog_status() -> dict:
                 "path": str(path),
                 "persistent_hint": str(path).startswith("/data/"),
             }
-        synced_at = float(data.get("synced_at") or 0)
-        age = max(0, int(time.time() - synced_at)) if synced_at else None
-        return {
-            "ready": True,
-            "count": len(data.get("results") or []),
-            "synced_at": synced_at or None,
-            "age_seconds": age,
-            "freshness": _freshness(age),
-            "category_count": int(data.get("category_count") or 0),
-            "failed_category_count": int(data.get("failed_category_count") or 0),
-            "path": str(path),
-            "persistent_hint": str(path).startswith("/data/"),
-        }
+        return _status_payload(data, path)
+
+
+def catalog_status_lightweight() -> dict:
+    """Health-check status without parsing the ~30MB catalog on cold start."""
+    with _LOCK:
+        path = catalog_path()
+        if not path.exists():
+            return {
+                "ready": False,
+                "count": 0,
+                "synced_at": None,
+                "age_seconds": None,
+                "freshness": "missing",
+                "path": str(path),
+                "persistent_hint": str(path).startswith("/data/"),
+            }
+
+        # If this worker already loaded the catalog, this is exact and free.
+        try:
+            stat = path.stat()
+        except OSError:
+            stat = None
+        if _CACHE_DATA is not None and stat is not None and _CACHE_MTIME == stat.st_mtime:
+            return _status_payload(_CACHE_DATA, path)
+
+        status_path = _status_path()
+        try:
+            raw = json.loads(status_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return _status_payload(raw, path)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        # Compatibility with catalogs created before v0.36: metadata sits at
+        # the beginning of the compact JSON, so read only a small prefix.
+        count = 0
+        synced_at = 0.0
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                prefix = handle.read(4096)
+            count_match = re.search(r'"count"\s*:\s*(\d+)', prefix)
+            synced_match = re.search(r'"synced_at"\s*:\s*([0-9.]+)', prefix)
+            if count_match:
+                count = int(count_match.group(1))
+            if synced_match:
+                synced_at = float(synced_match.group(1))
+        except (OSError, ValueError):
+            pass
+
+        if not synced_at and stat is not None:
+            synced_at = float(stat.st_mtime)
+        return _status_payload({"count": count, "synced_at": synced_at}, path)
 
 
 def search_catalog(query: str, limit: int = 1500) -> tuple[list[dict], dict]:
@@ -332,6 +413,7 @@ def finish_sync(sync_id: str, *, metadata: dict | None = None) -> dict:
         tmp_path = final_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp_path, final_path)
+        _write_status_sidecar(payload)
         _discard_staging(sync_id)
 
         _CACHE_DATA = payload

@@ -1,10 +1,22 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import logging
 from time import perf_counter
+
+from django.conf import settings
 from .stores import ALL_ADAPTERS
-from .resilience import circuit_is_open, circuit_record_failure, circuit_record_success
+from .resilience import (
+    StoreConcurrencyBusy,
+    circuit_is_open,
+    circuit_record_failure,
+    circuit_record_success,
+    store_request_slot,
+)
 from .utils import search_query_variants
 from .listing_normalization import dedupe_listings
+from .metrics import record_store_result
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -32,31 +44,32 @@ class SearchAggregator:
         started = perf_counter()
         is_open, retry_after = circuit_is_open(store_key)
         if is_open:
-            return [], StoreRun(
-                adapter_class.name,
-                0,
-                0,
-                f"CircuitOpen: tienda pausada temporalmente; reintento en {retry_after}s",
-            )
+            error = f"CircuitOpen: tienda pausada temporalmente; reintento en {retry_after}s"
+            record_store_result(store_key, elapsed_ms=0, success=False, source="live", count=0)
+            return [], StoreRun(adapter_class.name, 0, 0, error)
 
         adapter = adapter_class()
         try:
-            query_variants = search_query_variants(card_name) or [card_name]
-            rows = []
+            # A process-wide outbound gate protects Railway threads when several
+            # users search at the same time. Frontend concurrency remains
+            # progressive; this gate only caps aggregate origin traffic.
+            with store_request_slot():
+                query_variants = search_query_variants(card_name) or [card_name]
+                rows = []
 
-            # Try increasingly tolerant MTG-name variants only when the prior
-            # variant did not yield a purchasable listing. This keeps ordinary
-            # searches at one request while covering accents, curly apostrophes,
-            # Unicode dashes and split-card naming differences.
-            for variant in query_variants:
-                candidate_rows = adapter.search(variant)
-                candidate_rows = [
-                    row for row in candidate_rows
-                    if row.available and (row.stock is None or row.stock > 0)
-                ]
-                if candidate_rows:
-                    rows = candidate_rows
-                    break
+                # Try increasingly tolerant MTG-name variants only when the prior
+                # variant did not yield a purchasable listing. This keeps ordinary
+                # searches at one request while covering accents, curly apostrophes,
+                # Unicode dashes and split-card naming differences.
+                for variant in query_variants:
+                    candidate_rows = adapter.search(variant)
+                    candidate_rows = [
+                        row for row in candidate_rows
+                        if row.available and (row.stock is None or row.stock > 0)
+                    ]
+                    if candidate_rows:
+                        rows = candidate_rows
+                        break
 
             # Normalize store vocabularies and collapse duplicate variants that
             # can appear across storefront pagination/search endpoints.
@@ -64,10 +77,21 @@ class SearchAggregator:
 
             elapsed = int((perf_counter() - started) * 1000)
             circuit_record_success(store_key)
+            record_store_result(store_key, elapsed_ms=elapsed, success=True, source="live", count=len(rows))
+            if elapsed >= 3000:
+                logger.info("slow store search store=%s elapsed_ms=%s count=%s", store_key, elapsed, len(rows))
             return rows, StoreRun(adapter.name, len(rows), elapsed)
+        except StoreConcurrencyBusy as exc:
+            elapsed = int((perf_counter() - started) * 1000)
+            # Internal load shedding is not an origin failure: do not poison the
+            # store circuit breaker just because Railway is temporarily busy.
+            record_store_result(store_key, elapsed_ms=elapsed, success=False, source="live", count=0)
+            logger.warning("store concurrency busy store=%s elapsed_ms=%s", store_key, elapsed)
+            return [], StoreRun(adapter.name, 0, elapsed, f"StoreConcurrencyBusy: {exc}")
         except Exception as exc:
             elapsed = int((perf_counter() - started) * 1000)
             circuit_record_failure(store_key, f"{type(exc).__name__}: {exc}")
+            record_store_result(store_key, elapsed_ms=elapsed, success=False, source="live", count=0)
             return [], StoreRun(
                 adapter.name,
                 0,
@@ -85,7 +109,8 @@ class SearchAggregator:
             rows, status = self.search_store(card_name, key)
             return key, rows, status
 
-        with ThreadPoolExecutor(max_workers=min(7, len(selected) or 1)) as pool:
+        max_workers = max(1, int(getattr(settings, "FETCHUCCINI_STORE_CONCURRENCY", 4)))
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(selected) or 1)) as pool:
             futures = [pool.submit(run, key) for key in selected]
             for future in as_completed(futures):
                 _, rows, status = future.result()

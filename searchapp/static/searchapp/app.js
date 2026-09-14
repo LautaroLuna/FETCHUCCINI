@@ -755,7 +755,7 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
     });
   }else if(data.stale){
     storeStates.set(key, {
-      status: fromSnapshot ? 'refreshing' : 'stale-error',
+      status: (fromSnapshot || data.refreshing) ? 'refreshing' : 'stale-error',
       label,
       count: (data.results || []).length,
       elapsed_ms: info.elapsed_ms || 0,
