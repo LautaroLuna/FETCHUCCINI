@@ -236,3 +236,10 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - `/health/` ampliado con versión, uptime, cache, catálogo Mercadia y circuit breakers; `?details=1` suma métricas por tienda.
 - `X-Request-ID`, `X-Fetchuccini-Version` y `Server-Timing` para diagnóstico.
 - Gunicorn se configura desde `gunicorn.conf.py` y permite ajustar workers/threads por variables de entorno.
+
+## v0.36.1 — Progreso visible del Mercadia Bridge
+
+- El CMD del bridge muestra porcentaje, categoría/lote actual, tiempo transcurrido y ETA estimada.
+- El rastreo del catálogo ocupa 0–90% y la subida a Railway 90–100%, terminando explícitamente en 100%.
+- La salida se ve en vivo y también queda guardada en `mercadia_bridge.log`.
+- El runner fuerza UTF-8 para mostrar correctamente acentos y mensajes en Windows.

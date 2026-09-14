@@ -16,10 +16,14 @@
   - ETA estimada
 - Al completar aparece explícitamente `100.0%`.
 - Se fuerza UTF-8 en el CMD para que acentos y mensajes se vean correctamente.
+- `/health/` y los headers de diagnóstico reportan ahora la versión `0.36.1`.
 
 ## Archivos tocados
 - `scripts/mercadia_catalog_sync.py`
 - `mercadia_bridge_run.bat`
+- `config/settings.py`
+- `searchapp/tests/test_scalability.py`
+- `README.md`
 
 ## Ejemplo
 ```text
