@@ -1,3 +1,4 @@
+import requests
 from decimal import Decimal
 from urllib.parse import urljoin
 from .base import StoreAdapter
@@ -24,7 +25,13 @@ class StarCityGamesAdapter(StoreAdapter):
         out: list[Listing] = []
         page = 1
         while page <= 10:
-            data = self.http.post(self.API, json=self._payload(card_name, page)).json()
+            try:
+                data = self.http.post(self.API, json=self._payload(card_name, page)).json()
+            except requests.RequestException as exc:
+                if out:
+                    self.mark_partial(exc)
+                    break
+                raise
             for result in data.get("Results") or []:
                 doc = result.get("Document") or {}
                 name = first(doc.get("card_name")) or first(doc.get("item_display_name")) or card_name

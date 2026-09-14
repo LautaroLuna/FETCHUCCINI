@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from .base import StoreAdapter
 from ..models import Listing
+from ..http import SearchBudgetExceeded
 from ..utils import as_int, exactish_card_name, normalize_space, parse_ars
 
 
@@ -65,11 +66,13 @@ class MagicDealersAdapter(StoreAdapter):
                     url,
                     params=params,
                     headers=headers,
-                    timeout=self.SEARCH_TIMEOUT_SECONDS,
+                    timeout=self.http.reserve_request(self.SEARCH_TIMEOUT_SECONDS),
                     **kwargs,
                 )
                 response.raise_for_status()
                 return response
+            except SearchBudgetExceeded:
+                raise
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < self.SEARCH_ATTEMPTS:
@@ -225,10 +228,11 @@ class MagicDealersAdapter(StoreAdapter):
                         self.SEARCH,
                         params={"c": 8, "q": card_name, "page": page},
                     ).text
-            except requests.RequestException:
+            except requests.RequestException as exc:
                 # If a later pagination request fails, keep the useful pages
                 # already collected instead of dropping MagicDealers entirely.
                 if rows:
+                    self.mark_partial(exc)
                     break
                 raise
 

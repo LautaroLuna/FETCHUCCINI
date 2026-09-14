@@ -16,7 +16,7 @@ class ScalabilityContractTests(TestCase):
         cache.clear()
 
     def test_version_and_cache_backend_are_exposed(self):
-        self.assertEqual(settings.FETCHUCCINI_VERSION, "0.36.1")
+        self.assertEqual(settings.FETCHUCCINI_VERSION, "0.37.0")
         self.assertIn(settings.FETCHUCCINI_CACHE_BACKEND, {"file", "redis"})
         status = cache_health(force=True)
         self.assertEqual(status["backend"], settings.FETCHUCCINI_CACHE_BACKEND)
@@ -42,7 +42,7 @@ class ScalabilityContractTests(TestCase):
         middleware = RequestObservabilityMiddleware(lambda _request: HttpResponse("ok"))
         response = middleware(request)
         self.assertTrue(response["X-Request-ID"])
-        self.assertEqual(response["X-Fetchuccini-Version"], "0.36.1")
+        self.assertEqual(response["X-Fetchuccini-Version"], "0.37.0")
         self.assertIn("app;dur=", response["Server-Timing"])
 
     def test_observability_keeps_safe_incoming_request_id(self):
@@ -61,7 +61,7 @@ class ScalabilityContractTests(TestCase):
 
         response = views.health(RequestFactory().get("/health/?details=1"))
         data = json.loads(response.content)
-        self.assertEqual(data["version"], "0.36.1")
+        self.assertEqual(data["version"], "0.37.0")
         self.assertIn("cache", data)
         self.assertIn("concurrency", data)
         self.assertIn("metrics", data)

@@ -1,5 +1,3 @@
 @echo off
 set "FETCHUCCINI_URL=https://fetchuccini-production.up.railway.app"
 set "MERCADIA_BRIDGE_KEY=REEMPLAZAR_CON_TU_CLAVE_PRIVADA"
-set "MERCADIA_CATALOG_WORKERS=3"
-set "MERCADIA_CATALOG_DELAY=0.12"

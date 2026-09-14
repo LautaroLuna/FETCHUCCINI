@@ -3,6 +3,7 @@ import logging
 import json
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.conf import settings
 from django.core.cache import cache
@@ -27,11 +28,9 @@ from .services.listing_normalization import dedupe_listing_dicts, normalize_list
 from .services.cache_runtime import cache_health
 from .services.metrics import metrics_snapshot, record_rate_limit, record_store_result
 from .services.utils import normalize_card_search_text
+from .services.store_registry import STORE_REGISTRY, store_definition
 
 
-FRESH_CACHE_SECONDS = 5 * 60
-MAGICDEALERS_FRESH_CACHE_SECONDS = 30 * 60
-STALE_CACHE_SECONDS = 24 * 60 * 60
 AUTOCOMPLETE_CACHE_SECONDS = 60 * 60
 
 MERCADIA_BRIDGE_SYNC_SECONDS = 30 * 60
@@ -53,14 +52,20 @@ RATE_LIMITS = {
 
 
 def _client_ip(request) -> str:
-    # Railway exposes the original remote address as X-Real-IP. Keep
-    # X-Forwarded-For/REMOTE_ADDR fallbacks for Render and local development.
-    real_ip = (request.META.get("HTTP_X_REAL_IP") or "").strip()
-    if real_ip:
-        return real_ip
-    forwarded = [part.strip() for part in (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",") if part.strip()]
-    if forwarded:
-        return forwarded[0]
+    # Forwarded client-IP headers are trustworthy only behind the configured
+    # Railway/Render proxy (or when explicitly enabled). Local/direct clients
+    # cannot spoof rate-limit identity by sending X-Real-IP themselves.
+    if bool(getattr(settings, "FETCHUCCINI_TRUST_PROXY_HEADERS", False)):
+        real_ip = (request.META.get("HTTP_X_REAL_IP") or "").strip()
+        if real_ip:
+            return real_ip
+        forwarded = [
+            part.strip()
+            for part in (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")
+            if part.strip()
+        ]
+        if forwarded:
+            return forwarded[0]
     return request.META.get("REMOTE_ADDR") or "unknown"
 
 
@@ -143,6 +148,17 @@ def health(request):
     }
     if (request.GET.get("details") or "").strip().lower() in {"1", "true", "yes"}:
         payload["metrics"] = metrics_snapshot(store_keys)
+        payload["store_policies"] = {
+            key: {
+                "fresh_cache_seconds": definition.policy.fresh_cache_seconds,
+                "stale_cache_seconds": definition.policy.stale_cache_seconds,
+                "deadline_seconds": definition.policy.deadline_seconds,
+                "max_requests": definition.policy.max_requests,
+                "connect_timeout_seconds": definition.policy.connect_timeout_seconds,
+                "read_timeout_seconds": definition.policy.read_timeout_seconds,
+            }
+            for key, definition in STORE_REGISTRY.items()
+        }
     return JsonResponse(payload)
 
 
@@ -164,10 +180,21 @@ def _is_in_stock_result(row):
 
 def index(request):
     disabled = _disabled_store_keys()
+    stores = [
+        {
+            "key": definition.key,
+            "name": definition.name,
+            "currency": definition.currency,
+            "disabled": definition.key in disabled,
+        }
+        for definition in STORE_REGISTRY.values()
+    ]
     return render(request, "searchapp/index.html", {
+        "stores": stores,
         "disabled_store_keys": disabled,
-        "disabled_store_count": len(disabled),
-        "enabled_store_count": max(0, 7 - len(disabled)),
+        "disabled_store_count": sum(1 for store in stores if store["disabled"]),
+        "enabled_store_count": sum(1 for store in stores if not store["disabled"]),
+        "min_query_length": max(2, int(getattr(settings, "FETCHUCCINI_MIN_QUERY_LENGTH", 2))),
     })
 
 
@@ -175,6 +202,12 @@ def _validate_query(request):
     query = (request.GET.get("q") or "").strip()
     if not query:
         return None, JsonResponse({"error": "Falta el parámetro q."}, status=400)
+    min_length = max(2, int(getattr(settings, "FETCHUCCINI_MIN_QUERY_LENGTH", 2)))
+    if len(query) < min_length:
+        return None, JsonResponse({
+            "error": f"Ingresá al menos {min_length} caracteres para buscar.",
+            "min_query_length": min_length,
+        }, status=400)
     if len(query) > 120:
         return None, JsonResponse({"error": "La búsqueda es demasiado larga."}, status=400)
     return query, None
@@ -197,7 +230,7 @@ def _store_cache_keys(query: str, store_key: str):
     normalized = normalize_card_search_text(query) or query.casefold()
     raw = f"{normalized}|{store_key}".encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
-    return f"store-search:v19:fresh:{digest}", f"store-search:v19:stale:{digest}"
+    return f"store-search:v20:fresh:{digest}", f"store-search:v20:stale:{digest}"
 
 
 def _store_refresh_lock_key(query: str, store_key: str) -> str:
@@ -208,21 +241,20 @@ def _store_refresh_lock_key(query: str, store_key: str) -> str:
 
 def _acquire_store_refresh_lock(query: str, store_key: str) -> tuple[str, bool]:
     token = secrets.token_hex(8)
+    timeout = max(10, int(getattr(settings, "FETCHUCCINI_REFRESH_LOCK_SECONDS", 60)))
+    key = _store_refresh_lock_key(query, store_key)
     try:
-        result = cache.add(
-            _store_refresh_lock_key(query, store_key),
-            token,
-            timeout=max(10, int(getattr(settings, "FETCHUCCINI_REFRESH_LOCK_SECONDS", 60))),
-        )
-        # Some tolerant Redis clients return None when Redis is unreachable.
-        # Treat that as fail-open so users do not wait on a lock that was never set.
+        if str(getattr(settings, "FETCHUCCINI_CACHE_BACKEND", "file")) == "redis":
+            from django_redis import get_redis_connection
+
+            connection = get_redis_connection("default")
+            acquired = bool(connection.set(f"fetchuccini:raw:{key}", token, nx=True, ex=timeout))
+            return token, acquired
+
+        result = cache.add(key, token, timeout=timeout)
+        # Some tolerant backends return None on infrastructure trouble. Fail
+        # open rather than making users wait on a lock that was never created.
         acquired = True if result is None else bool(result)
-        if (
-            not acquired
-            and str(getattr(settings, "FETCHUCCINI_CACHE_BACKEND", "file")) == "redis"
-            and not cache_health().get("ok", False)
-        ):
-            acquired = True
     except Exception:
         acquired = True
     return token, acquired
@@ -231,7 +263,21 @@ def _acquire_store_refresh_lock(query: str, store_key: str) -> tuple[str, bool]:
 def _release_store_refresh_lock(query: str, store_key: str, token: str) -> None:
     key = _store_refresh_lock_key(query, store_key)
     try:
-        # Avoid deleting a newer worker's lock if ours somehow expired first.
+        if str(getattr(settings, "FETCHUCCINI_CACHE_BACKEND", "file")) == "redis":
+            from django_redis import get_redis_connection
+
+            connection = get_redis_connection("default")
+            physical_key = f"fetchuccini:raw:{key}"
+            connection.eval(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then "
+                "return redis.call('del', KEYS[1]) else return 0 end",
+                1,
+                physical_key,
+                token,
+            )
+            return
+
+        # File/local cache fallback: best-effort compare before delete.
         if cache.get(key) == token:
             cache.delete(key)
     except Exception:
@@ -277,6 +323,8 @@ def _response_from_snapshot(snapshot, *, fresh=False, stale=False, error=None):
         "fresh": bool(fresh),
         "stale": bool(stale),
         "age_seconds": age,
+        "partial": bool(snapshot.get("partial")),
+        "warning": snapshot.get("warning"),
     }
     if snapshot.get("bridge"):
         data["bridge"] = True
@@ -613,23 +661,20 @@ def autocomplete_api(request):
     return JsonResponse({"query": query, "suggestions": suggestions, "cached": False})
 
 
-def search_store_api(request):
-    """Fetch one store progressively with cache, coalescing and stale fallback."""
-    limited = _rate_limit_response(request, "search_store")
-    if limited:
-        return limited
-    query, error_response = _validate_query(request)
-    if error_response:
-        return error_response
+def _search_store_payload(query: str, store_key: str, *, aggregator: SearchAggregator | None = None):
+    """Canonical store-search pipeline shared by public endpoints.
 
-    store_key = (request.GET.get("store") or "").strip()
-    aggregator = SearchAggregator()
+    Every live store lookup now goes through the same cache, single-flight,
+    circuit-breaker and stale-fallback semantics. This keeps the legacy
+    aggregate endpoint from becoming a second, less-protected execution path.
+    """
+    aggregator = aggregator or SearchAggregator()
     if store_key not in aggregator.adapter_classes:
-        return JsonResponse({"error": "Tienda inválida."}, status=400)
+        raise KeyError(store_key)
 
     if store_key in _disabled_store_keys():
         adapter_name = aggregator.adapter_classes[store_key].name
-        return JsonResponse({
+        return {
             "query": query,
             "store_key": store_key,
             "results": [],
@@ -645,7 +690,7 @@ def search_store_api(request):
             "age_seconds": 0,
             "unavailable": True,
             "message": "Temporalmente no disponible en la versión online.",
-        })
+        }
 
     # Mercadia normally answers from the persistent catalog and does not need
     # an outbound request from Railway.
@@ -659,7 +704,7 @@ def search_store_api(request):
                 source="catalog",
                 count=len(catalog_payload.get("results") or []),
             )
-            return JsonResponse(catalog_payload)
+            return catalog_payload
 
     fresh_key, stale_key = _store_cache_keys(query, store_key)
     fresh = cache.get(fresh_key)
@@ -667,8 +712,14 @@ def search_store_api(request):
         if store_key == "mercadia" and _mercadia_bridge_enabled() and fresh.get("bridge"):
             _touch_mercadia_bridge_query(query)
         payload = _response_from_snapshot(fresh, fresh=True)
-        record_store_result(store_key, elapsed_ms=0, success=True, source="cache", count=len(payload.get("results") or []))
-        return JsonResponse(payload)
+        record_store_result(
+            store_key,
+            elapsed_ms=0,
+            success=True,
+            source="cache",
+            count=len(payload.get("results") or []),
+        )
+        return payload
 
     # Mercadia legacy bridge mode: queue instead of hammering an origin that
     # rejects hosted IPs.
@@ -683,11 +734,8 @@ def search_store_api(request):
             source="stale" if stale else "cache",
             count=len(payload.get("results") or []),
         )
-        return JsonResponse(payload)
+        return payload
 
-    # v0.36 single-flight: when several users miss the same cache entry at the
-    # same time, one request refreshes the origin while peers briefly wait for
-    # its snapshot. Redis makes this work across Gunicorn workers/replicas too.
     stale_before_refresh = cache.get(stale_key)
     lock_token, lock_acquired = _acquire_store_refresh_lock(query, store_key)
     if not lock_acquired:
@@ -698,14 +746,26 @@ def search_store_api(request):
         if coalesced is not None:
             payload = _response_from_snapshot(coalesced, fresh=True)
             payload["coalesced"] = True
-            record_store_result(store_key, elapsed_ms=0, success=True, source="coalesced", count=len(payload.get("results") or []))
-            return JsonResponse(payload)
+            record_store_result(
+                store_key,
+                elapsed_ms=0,
+                success=True,
+                source="coalesced",
+                count=len(payload.get("results") or []),
+            )
+            return payload
         if stale_before_refresh is not None:
             payload = _response_from_snapshot(stale_before_refresh, stale=True)
             payload["refreshing"] = True
             payload["coalesced"] = True
-            record_store_result(store_key, elapsed_ms=0, success=True, source="coalesced", count=len(payload.get("results") or []))
-            return JsonResponse(payload)
+            record_store_result(
+                store_key,
+                elapsed_ms=0,
+                success=True,
+                source="coalesced",
+                count=len(payload.get("results") or []),
+            )
+            return payload
 
     try:
         rows, run = aggregator.search_store(query, store_key)
@@ -721,8 +781,8 @@ def search_store_api(request):
                     count=len(payload.get("results") or []),
                     count_request=False,
                 )
-                return JsonResponse(payload)
-            return JsonResponse({
+                return payload
+            return {
                 "query": query,
                 "store_key": store_key,
                 "results": [],
@@ -736,7 +796,9 @@ def search_store_api(request):
                 "fresh": False,
                 "stale": False,
                 "age_seconds": 0,
-            })
+                "partial": False,
+                "warning": None,
+            }
 
         snapshot = {
             "query": query,
@@ -749,21 +811,51 @@ def search_store_api(request):
                 "error": None,
             },
             "cached_at": time.time(),
+            "partial": bool(run.partial),
+            "warning": run.warning,
         }
-        fresh_seconds = MAGICDEALERS_FRESH_CACHE_SECONDS if store_key == "magicdealers" else FRESH_CACHE_SECONDS
-        cache.set(fresh_key, snapshot, fresh_seconds)
-        cache.set(stale_key, snapshot, STALE_CACHE_SECONDS)
+        definition = store_definition(store_key)
+        policy = definition.policy if definition is not None else None
+        fresh_seconds = policy.fresh_cache_seconds if policy else 5 * 60
+        stale_seconds = policy.stale_cache_seconds if policy else 24 * 60 * 60
 
-        return JsonResponse({
+        if run.partial:
+            # Partial pages are useful to the current user but should never
+            # evict a complete stale snapshot for an entire day.
+            cache.set(fresh_key, snapshot, min(fresh_seconds, 60))
+            if stale_before_refresh is None:
+                cache.set(stale_key, snapshot, min(stale_seconds, 5 * 60))
+        else:
+            cache.set(fresh_key, snapshot, fresh_seconds)
+            cache.set(stale_key, snapshot, stale_seconds)
+
+        return {
             **snapshot,
             "cached": False,
             "fresh": True,
             "stale": False,
             "age_seconds": 0,
-        })
+        }
     finally:
         if lock_acquired:
             _release_store_refresh_lock(query, store_key, lock_token)
+
+
+def search_store_api(request):
+    """Fetch one store progressively through the canonical search pipeline."""
+    limited = _rate_limit_response(request, "search_store")
+    if limited:
+        return limited
+    query, error_response = _validate_query(request)
+    if error_response:
+        return error_response
+
+    store_key = (request.GET.get("store") or "").strip()
+    aggregator = SearchAggregator()
+    if store_key not in aggregator.adapter_classes:
+        return JsonResponse({"error": "Tienda inválida."}, status=400)
+
+    return JsonResponse(_search_store_payload(query, store_key, aggregator=aggregator))
 
 
 def search_cache_api(request):
@@ -818,7 +910,12 @@ def search_cache_api(request):
 
 
 def search_api(request):
-    """Compatibility endpoint: waits for all stores like the original MVP."""
+    """Compatibility endpoint using the same protected per-store pipeline.
+
+    The progressive frontend should continue to use /api/search/cache/ plus
+    /api/search/store/. This endpoint remains for compatibility, but no longer
+    bypasses cache, single-flight or Mercadia catalog handling.
+    """
     limited = _rate_limit_response(request, "search_all")
     if limited:
         return limited
@@ -828,28 +925,58 @@ def search_api(request):
 
     aggregator = SearchAggregator()
     stores = _selected_store_keys(request, aggregator)
-    catalog_payload = None
-    live_stores = list(stores)
-    if "mercadia" in live_stores and _mercadia_bridge_enabled():
-        catalog_payload = _mercadia_catalog_payload(query)
-        if catalog_payload is not None:
-            live_stores.remove("mercadia")
+    if not stores:
+        return JsonResponse({"query": query, "count": 0, "results": [], "stores": []})
 
-    listings, runs = aggregator.search(query, live_stores)
-    results = [row.to_dict() for row in listings]
-    store_payloads = [
-        {"store": r.store, "count": r.count, "elapsed_ms": r.elapsed_ms, "error": r.error}
-        for r in runs
-    ]
-    if catalog_payload is not None:
-        results.extend(catalog_payload.get("results") or [])
-        store_payloads.append(catalog_payload.get("store") or {"store": "Mercadia", "count": 0, "elapsed_ms": 0, "error": None})
+    payloads = []
+    max_workers = max(1, int(getattr(settings, "FETCHUCCINI_STORE_CONCURRENCY", 4)))
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(stores))) as pool:
+        future_map = {
+            pool.submit(_search_store_payload, query, key, aggregator=aggregator): key
+            for key in stores
+        }
+        for future in as_completed(future_map):
+            key = future_map[future]
+            try:
+                payloads.append(future.result())
+            except Exception as exc:
+                definition = store_definition(key)
+                payloads.append({
+                    "query": query,
+                    "store_key": key,
+                    "results": [],
+                    "store": {
+                        "store": definition.name if definition else key,
+                        "count": 0,
+                        "elapsed_ms": 0,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    "cached": False,
+                    "fresh": False,
+                    "stale": False,
+                    "age_seconds": 0,
+                })
 
-    results = dedupe_listing_dicts(results)
-    payload = {
+    results = dedupe_listing_dicts(
+        row
+        for store_payload in payloads
+        for row in (store_payload.get("results") or [])
+    )
+    store_payloads = []
+    for store_payload in payloads:
+        info = dict(store_payload.get("store") or {})
+        info["store_key"] = store_payload.get("store_key")
+        info["cached"] = bool(store_payload.get("cached"))
+        info["stale"] = bool(store_payload.get("stale"))
+        info["partial"] = bool(store_payload.get("partial"))
+        if store_payload.get("warning") and not info.get("error"):
+            info["warning"] = store_payload.get("warning")
+        store_payloads.append(info)
+
+    return JsonResponse({
         "query": query,
         "count": len(results),
         "results": results,
         "stores": sorted(store_payloads, key=lambda row: str(row.get("store") or "")),
-    }
-    return JsonResponse(payload)
+    })
+

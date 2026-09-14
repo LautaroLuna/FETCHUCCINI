@@ -1,4 +1,5 @@
 import re
+import requests
 from decimal import Decimal
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -110,7 +111,13 @@ class BatikuevaAdapter(StoreAdapter):
         seen_products = set()
 
         for page in range(1, 51):
-            html, explicit_has_next = self._fetch_page(card_name, page)
+            try:
+                html, explicit_has_next = self._fetch_page(card_name, page)
+            except requests.RequestException as exc:
+                if out:
+                    self.mark_partial(exc)
+                    break
+                raise
             soup = BeautifulSoup(html or "", "html.parser")
             nodes = soup.find_all(attrs={"data-variants": True})
             if not nodes:

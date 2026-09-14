@@ -1,3 +1,4 @@
+import requests
 from decimal import Decimal
 from .base import StoreAdapter
 from ..models import Listing
@@ -14,11 +15,17 @@ class LaWorkshopAdapter(StoreAdapter):
         out: list[Listing] = []
         page = 1
         while page <= 25:
-            data = self.http.get(self.API, params={
-                "name": card_name,
-                "page": page,
-                "per_page": 20,
-            }).json()
+            try:
+                data = self.http.get(self.API, params={
+                    "name": card_name,
+                    "page": page,
+                    "per_page": 20,
+                }).json()
+            except requests.RequestException as exc:
+                if out:
+                    self.mark_partial(exc)
+                    break
+                raise
             products = data.get("products") or data.get("results") or []
             for product in products:
                 name = product.get("name") or product.get("card_name") or card_name
