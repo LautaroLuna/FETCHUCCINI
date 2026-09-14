@@ -237,9 +237,7 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - `X-Request-ID`, `X-Fetchuccini-Version` y `Server-Timing` para diagnóstico.
 - Gunicorn se configura desde `gunicorn.conf.py` y permite ajustar workers/threads por variables de entorno.
 
-## v0.36.1 — Progreso visible del Mercadia Bridge
 
-- El CMD del bridge muestra porcentaje, categoría/lote actual, tiempo transcurrido y ETA estimada.
-- El rastreo del catálogo ocupa 0–90% y la subida a Railway 90–100%, terminando explícitamente en 100%.
-- La salida se ve en vivo y también queda guardada en `mercadia_bridge.log`.
-- El runner fuerza UTF-8 para mostrar correctamente acentos y mensajes en Windows.
+### Mercadia Bridge v0.36.1
+
+El catálogo local usa 3 workers concurrentes por defecto, muestra progreso/ETA en ejecución manual y guarda el snapshot grande en `%LOCALAPPDATA%\Fetchuccini` para evitar I/O de OneDrive. La tarea programada debe ejecutar `mercadia_bridge_run.bat --scheduled`; volver a correr `mercadia_bridge_setup.bat` actualiza la tarea sin regenerar la clave existente.

@@ -6,7 +6,6 @@ import re
 import sys
 import time
 import uuid
-import shutil
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -30,97 +29,27 @@ BATCH_SIZE = 400
 REQUEST_DELAY = max(0.0, float(os.environ.get("MERCADIA_CATALOG_DELAY", "0.12")))
 
 
-def _env(name: str) -> str:
-    return (os.environ.get(name) or "").strip()
-
-
-_INTERACTIVE_PROGRESS = (
-    _env("MERCADIA_BRIDGE_INTERACTIVE").lower() in {"1", "true", "yes", "on"}
-    or sys.stdout.isatty()
-)
-_LAST_PROGRESS_LEN = 0
-
-
-def _format_duration(seconds: float | int | None) -> str:
-    if seconds is None:
-        return "--"
+def _fmt_duration(seconds: float | int) -> str:
     seconds = max(0, int(seconds))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
     if hours:
-        return f"{hours}h {minutes:02d}m"
+        return f"{hours}h {minutes}m {secs}s"
     if minutes:
-        return f"{minutes}m {secs:02d}s"
+        return f"{minutes}m {secs}s"
     return f"{secs}s"
 
 
-def _progress_line(
-    label: str,
-    current: int,
-    total: int,
-    *,
-    suffix: str = "",
-    started_at: float | None = None,
-) -> None:
-    """Redraw one progress line in an interactive console.
-
-    Scheduled runs redirect stdout to the log, so they deliberately skip the
-    carriage-return UI and keep the logfile readable.
-    """
-    global _LAST_PROGRESS_LEN
-    if not _INTERACTIVE_PROGRESS:
-        return
-
-    total = max(1, int(total or 1))
-    current = min(max(0, int(current or 0)), total)
-    ratio = current / total
-    percent = ratio * 100
-
-    columns = max(70, shutil.get_terminal_size((110, 24)).columns)
-    bar_width = max(16, min(32, columns // 4))
-    filled = int(round(bar_width * ratio))
+def _progress(percent: float | int, message: str) -> None:
+    value = max(0, min(100, int(round(percent))))
+    bar_width = 24
+    filled = int(round((value / 100) * bar_width))
     bar = "#" * filled + "-" * (bar_width - filled)
-
-    timing = ""
-    if started_at is not None:
-        elapsed = max(0.0, time.time() - started_at)
-        eta = None
-        if current > 0 and current < total:
-            eta = elapsed * (total - current) / current
-        timing = f" | {_format_duration(elapsed)}"
-        if eta is not None:
-            timing += f" | ETA {_format_duration(eta)}"
-
-    base = f"[{bar}] {percent:5.1f}% {current}/{total} {label}"
-    tail = f" | {suffix}" if suffix else ""
-    line = base + tail + timing
-
-    # Never let the progress text wrap: wrapping would defeat the one-line UI.
-    max_len = max(50, columns - 1)
-    if len(line) > max_len:
-        line = line[: max_len - 3] + "..."
-
-    padding = " " * max(0, _LAST_PROGRESS_LEN - len(line))
-    sys.stdout.write("\r" + line + padding)
-    sys.stdout.flush()
-    _LAST_PROGRESS_LEN = len(line)
+    print(f"[PROGRESO] [{bar}] {value:3d}% | {message}", flush=True)
 
 
-def _finish_progress_line() -> None:
-    global _LAST_PROGRESS_LEN
-    if _INTERACTIVE_PROGRESS and _LAST_PROGRESS_LEN:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        _LAST_PROGRESS_LEN = 0
-
-
-def _progress_log(index: int, total: int, category_name: str, row_count: int) -> None:
-    """Compact progress for scheduled/logged runs."""
-    if _INTERACTIVE_PROGRESS:
-        return
-    if index == 1 or index == total or index % 10 == 0:
-        percent = (index / max(1, total)) * 100
-        print(f"[PROGRESO] {index}/{total} ({percent:.1f}%) {category_name}: {row_count} en stock")
+def _env(name: str) -> str:
+    return (os.environ.get(name) or "").strip()
 
 
 def _load_state() -> dict:
@@ -305,7 +234,7 @@ def _parse_product_rows(adapter: MercadiaAdapter, html: str, category: dict) -> 
     return rows, has_next
 
 
-def _crawl_category(adapter: MercadiaAdapter, category: dict, on_page=None) -> list[dict]:
+def _crawl_category(adapter: MercadiaAdapter, category: dict) -> list[dict]:
     out = []
     seen = set()
     for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
@@ -320,8 +249,6 @@ def _crawl_category(adapter: MercadiaAdapter, category: dict, on_page=None) -> l
                 continue
             seen.add(key)
             out.append(row)
-        if on_page is not None:
-            on_page(page, len(out))
         if not has_next:
             break
         if REQUEST_DELAY:
@@ -350,11 +277,9 @@ def _upload_catalog(base_url: str, headers: dict, rows: list[dict], metadata: di
     start.raise_for_status()
 
     total_batches = max(1, (len(rows) + BATCH_SIZE - 1) // BATCH_SIZE)
-    upload_started = time.time()
-    if _INTERACTIVE_PROGRESS:
-        _progress_line("Subiendo", 0, total_batches, suffix=f"{len(rows)} publicaciones", started_at=upload_started)
     for index in range(0, len(rows), BATCH_SIZE):
         batch = rows[index:index + BATCH_SIZE]
+        batch_number = index // BATCH_SIZE + 1
         pushed = requests.post(
             f"{base_url}/api/bridge/mercadia/catalog/batch/",
             json={"sync_id": sync_id, "results": batch},
@@ -362,18 +287,10 @@ def _upload_catalog(base_url: str, headers: dict, rows: list[dict], metadata: di
             timeout=60,
         )
         pushed.raise_for_status()
-        batch_no = index // BATCH_SIZE + 1
-        if _INTERACTIVE_PROGRESS:
-            _progress_line(
-                "Subiendo",
-                batch_no,
-                total_batches,
-                suffix=f"{min(index + len(batch), len(rows))}/{len(rows)} publicaciones",
-                started_at=upload_started,
-            )
-        elif batch_no == 1 or batch_no == total_batches or batch_no % 10 == 0:
-            print(f"[UPLOAD] lote {batch_no}/{total_batches}: {len(batch)}")
-    _finish_progress_line()
+        # Upload is the final ~12% of the whole job. This gives the user a
+        # stable overall percentage instead of a second unrelated counter.
+        upload_percent = 88 + (batch_number / total_batches) * 11
+        _progress(upload_percent, f"Subiendo lote {batch_number}/{total_batches} ({len(batch)} publicaciones)")
 
     finish = requests.post(
         f"{base_url}/api/bridge/mercadia/catalog/finish/",
@@ -412,75 +329,59 @@ def main() -> int:
         "User-Agent": "Fetchuccini-Mercadia-Catalog/1.0",
     }
     try:
+        # Keep progress visible immediately when launched manually.
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
+
         adapter = MercadiaAdapter()
         adapter.http.timeout = 18
         state = _load_state()
         previous_categories = state.get("categories") if isinstance(state.get("categories"), dict) else {}
 
-        print("[INFO] Descubriendo categorías MTG de Mercadia...")
+        _progress(0, "Iniciando sincronización de Mercadia")
+        print("[INFO] Descubriendo categorías MTG de Mercadia...", flush=True)
         seed = adapter.http.get(
             adapter.SEARCH,
             params={"q": SEED_QUERY, "product_list_limit": PAGE_LIMIT, "p": 1},
         )
         categories = _discover_magic_categories(seed.text)
-        print(f"[INFO] {len(categories)} categorías MTG descubiertas.")
+        total_categories = len(categories)
+        print(f"[INFO] {total_categories} categorías MTG descubiertas.", flush=True)
+        _progress(5, f"Categorías descubiertas: {total_categories}")
 
         new_categories = {}
         failures = 0
-        total_categories = len(categories)
         crawl_started = time.time()
-        if _INTERACTIVE_PROGRESS:
-            _progress_line("Catálogo", 0, total_categories, suffix="Preparando...", started_at=crawl_started)
-
         for index, category in enumerate(categories, start=1):
             url = category["url"]
             old = previous_categories.get(url) or {}
-            category_name = category["name"]
-
-            if _INTERACTIVE_PROGRESS:
-                _progress_line(
-                    "Catálogo",
-                    index - 1,
-                    total_categories,
-                    suffix=f"{category_name} | iniciando",
-                    started_at=crawl_started,
-                )
-
-            def _page_progress(page: int, row_count: int) -> None:
-                _progress_line(
-                    "Catálogo",
-                    index - 1,
-                    total_categories,
-                    suffix=f"{category_name} | pág {page} | {row_count} stock",
-                    started_at=crawl_started,
-                )
-
+            before_percent = 5 + ((index - 1) / max(1, total_categories)) * 80
+            elapsed_crawl = time.time() - crawl_started
+            if index > 1:
+                avg_seconds = elapsed_crawl / (index - 1)
+                eta_seconds = avg_seconds * (total_categories - index + 1)
+                eta_text = f" | ETA aprox. {_fmt_duration(eta_seconds)}"
+            else:
+                eta_text = ""
+            _progress(before_percent, f"Categoría {index}/{total_categories}: {category['name']}{eta_text}")
             try:
-                rows = _crawl_category(adapter, category, on_page=_page_progress if _INTERACTIVE_PROGRESS else None)
+                rows = _crawl_category(adapter, category)
                 new_categories[url] = {
-                    "name": category_name,
+                    "name": category["name"],
                     "group": category.get("group"),
                     "synced_at": time.time(),
                     "rows": rows,
                 }
-                if _INTERACTIVE_PROGRESS:
-                    _progress_line(
-                        "Catálogo",
-                        index,
-                        total_categories,
-                        suffix=f"{category_name} | {len(rows)} stock",
-                        started_at=crawl_started,
-                    )
-                else:
-                    _progress_log(index, total_categories, category_name, len(rows))
+                print(f"    [OK] {len(rows)} publicación(es) en stock")
             except Exception as exc:
                 failures += 1
-                _finish_progress_line()
                 if old:
                     new_categories[url] = old
-                    print(f"[WARN] {category_name}: {type(exc).__name__}: {exc} — conservo el último snapshot local")
+                    print(f"    [WARN] {type(exc).__name__}: {exc} — conservo el último snapshot local")
                 else:
-                    print(f"[ERROR] {category_name}: {type(exc).__name__}: {exc}")
+                    print(f"    [ERROR] {type(exc).__name__}: {exc}")
             if index % 10 == 0:
                 checkpoint_categories = dict(previous_categories)
                 checkpoint_categories.update(new_categories)
@@ -489,10 +390,10 @@ def main() -> int:
                     "updated_at": time.time(),
                     "categories": checkpoint_categories,
                 })
+            completed_percent = 5 + (index / max(1, total_categories)) * 80
+            _progress(completed_percent, f"Categorías procesadas: {index}/{total_categories}")
             if REQUEST_DELAY:
                 time.sleep(REQUEST_DELAY)
-
-        _finish_progress_line()
 
         local_state = {
             "version": 1,
@@ -502,7 +403,8 @@ def main() -> int:
         _save_state(local_state)
         rows = _catalog_union(new_categories)
         elapsed = int(time.time() - started)
-        print(f"[INFO] Catálogo local: {len(rows)} publicaciones únicas. Subiendo a Fetchuccini...")
+        _progress(87, f"Catálogo local listo: {len(rows)} publicaciones únicas")
+        print(f"[INFO] Catálogo local: {len(rows)} publicaciones únicas. Subiendo a Fetchuccini...", flush=True)
         metadata = {
             "category_count": len(categories),
             "failed_category_count": failures,
@@ -511,18 +413,18 @@ def main() -> int:
         }
         _upload_catalog(base_url, headers, rows, metadata)
         if failures:
-            print(f"[WARN] {failures} categoría(s) fallaron; se conservaron datos anteriores cuando existían.")
-        print(f"[OK] Sincronización completa terminada en {elapsed // 60}m {elapsed % 60}s.")
+            print(f"[WARN] {failures} categoría(s) fallaron; se conservaron datos anteriores cuando existían.", flush=True)
+        total_elapsed = int(time.time() - started)
+        _progress(100, f"Sincronización terminada en {_fmt_duration(total_elapsed)}")
+        print(f"[OK] Sincronización completa terminada en {_fmt_duration(total_elapsed)}.", flush=True)
         return 0
     except requests.HTTPError as exc:
-        _finish_progress_line()
         if exc.response is not None and exc.response.status_code == 403 and "fetchuccini" in str(exc.request.url).lower():
             print("[ERROR] Railway rechazó la clave del bridge. Revisá MERCADIA_BRIDGE_KEY.")
         else:
             print(f"[ERROR] HTTPError: {exc}")
         return 1
     except Exception as exc:
-        _finish_progress_line()
         print(f"[ERROR] {type(exc).__name__}: {exc}")
         return 1
     finally:
