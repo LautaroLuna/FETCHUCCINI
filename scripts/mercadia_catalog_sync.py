@@ -27,50 +27,46 @@ PAGE_LIMIT = 36
 MAX_PAGES_PER_CATEGORY = 60
 BATCH_SIZE = 400
 REQUEST_DELAY = max(0.0, float(os.environ.get("MERCADIA_CATALOG_DELAY", "0.12")))
-
-
-def _env(name: str) -> str:
-    return (os.environ.get(name) or "").strip()
+PROGRESS_BAR_WIDTH = 24
 
 
 def _format_duration(seconds: float | int | None) -> str:
     if seconds is None:
-        return "calculando..."
+        return "--:--"
     seconds = max(0, int(seconds))
-    hours, rem = divmod(seconds, 3600)
-    minutes, secs = divmod(rem, 60)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
     if hours:
-        return f"{hours}h {minutes:02d}m"
-    if minutes:
-        return f"{minutes}m {secs:02d}s"
-    return f"{secs}s"
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
-def _print_progress(
-    *,
-    stage: str,
-    current: int,
-    total: int,
-    stage_started: float,
-    overall_start_pct: float,
-    overall_end_pct: float,
-    detail: str = "",
-) -> None:
+def _progress_bar(completed: int, total: int, width: int = PROGRESS_BAR_WIDTH) -> str:
     if total <= 0:
-        return
-    current = max(0, min(current, total))
-    ratio = current / total
-    overall_pct = overall_start_pct + (overall_end_pct - overall_start_pct) * ratio
-    elapsed = max(0.0, time.time() - stage_started)
+        return "[" + "-" * width + "]"
+    ratio = min(1.0, max(0.0, completed / total))
+    filled = int(round(ratio * width))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def _print_progress(label: str, completed: int, total: int, started_at: float, detail: str = "") -> None:
+    elapsed = max(0.0, time.time() - started_at)
+    percent = (completed / total * 100.0) if total else 0.0
     eta = None
-    if current > 0 and current < total:
-        eta = (elapsed / current) * (total - current)
+    if completed > 0 and total > completed:
+        eta = (elapsed / completed) * (total - completed)
     suffix = f" | {detail}" if detail else ""
     print(
-        f"[PROGRESO] {overall_pct:5.1f}% | {stage} {current}/{total}"
-        f" | transcurrido {_format_duration(elapsed)} | ETA {_format_duration(eta)}{suffix}",
+        f"[PROGRESO {label}] {_progress_bar(completed, total)} "
+        f"{percent:5.1f}% ({completed}/{total}) "
+        f"| transcurrido {_format_duration(elapsed)} "
+        f"| ETA {_format_duration(eta)}{suffix}",
         flush=True,
     )
+
+
+def _env(name: str) -> str:
+    return (os.environ.get(name) or "").strip()
 
 
 def _load_state() -> dict:
@@ -255,7 +251,7 @@ def _parse_product_rows(adapter: MercadiaAdapter, html: str, category: dict) -> 
     return rows, has_next
 
 
-def _crawl_category(adapter: MercadiaAdapter, category: dict) -> list[dict]:
+def _crawl_category(adapter: MercadiaAdapter, category: dict, page_callback=None) -> list[dict]:
     out = []
     seen = set()
     for page in range(1, MAX_PAGES_PER_CATEGORY + 1):
@@ -270,6 +266,8 @@ def _crawl_category(adapter: MercadiaAdapter, category: dict) -> list[dict]:
                 continue
             seen.add(key)
             out.append(row)
+        if page_callback:
+            page_callback(page, len(out), has_next)
         if not has_next:
             break
         if REQUEST_DELAY:
@@ -287,12 +285,7 @@ def _catalog_union(category_state: dict) -> list[dict]:
     return list(unique.values())
 
 
-def _upload_catalog(
-    base_url: str,
-    headers: dict,
-    rows: list[dict],
-    metadata: dict,
-) -> None:
+def _upload_catalog(base_url: str, headers: dict, rows: list[dict], metadata: dict) -> None:
     sync_id = f"{int(time.time())}-{uuid.uuid4().hex[:10]}"
     start = requests.post(
         f"{base_url}/api/bridge/mercadia/catalog/start/",
@@ -304,7 +297,7 @@ def _upload_catalog(
 
     total_batches = max(1, (len(rows) + BATCH_SIZE - 1) // BATCH_SIZE)
     upload_started = time.time()
-    print(f"[INFO] Subiendo catálogo en {total_batches} lote(s)...", flush=True)
+    print(f"[FASE 2/2] Subiendo {len(rows)} publicaciones a Fetchuccini en {total_batches} lote(s)...", flush=True)
     for index in range(0, len(rows), BATCH_SIZE):
         batch = rows[index:index + BATCH_SIZE]
         pushed = requests.post(
@@ -317,12 +310,10 @@ def _upload_catalog(
         batch_number = index // BATCH_SIZE + 1
         uploaded = min(index + len(batch), len(rows))
         _print_progress(
-            stage="Subida",
-            current=batch_number,
-            total=total_batches,
-            stage_started=upload_started,
-            overall_start_pct=90.0,
-            overall_end_pct=100.0,
+            "SUBIDA",
+            batch_number,
+            total_batches,
+            upload_started,
             detail=f"{uploaded}/{len(rows)} publicaciones",
         )
 
@@ -342,8 +333,8 @@ def _upload_catalog(
     data = finish.json()
     previous = data.get("previous_count")
     previous_text = f" (anterior: {previous})" if previous not in (None, 0) else ""
-    print(f"[PROGRESO] 100.0% | Sincronización completa", flush=True)
-    print(f"[OK] Catálogo publicado: {data.get('count', len(rows))} publicaciones en stock{previous_text}.", flush=True)
+    print(f"[OK] Catálogo publicado: {data.get('count', len(rows))} publicaciones en stock{previous_text}.")
+
 
 def main() -> int:
     base_url = _env("FETCHUCCINI_URL").rstrip("/")
@@ -368,56 +359,62 @@ def main() -> int:
         state = _load_state()
         previous_categories = state.get("categories") if isinstance(state.get("categories"), dict) else {}
 
-        print("[INFO] Descubriendo categorías MTG de Mercadia...", flush=True)
+        print("[INFO] Descubriendo categorías MTG de Mercadia...")
         seed = adapter.http.get(
             adapter.SEARCH,
             params={"q": SEED_QUERY, "product_list_limit": PAGE_LIMIT, "p": 1},
         )
         categories = _discover_magic_categories(seed.text)
-        print(f"[INFO] {len(categories)} categorías MTG descubiertas.", flush=True)
-        crawl_started = time.time()
-        print(
-            f"[PROGRESO]   0.0% | Catálogo 0/{len(categories)} | ETA calculándose...",
-            flush=True,
-        )
+        print(f"[INFO] {len(categories)} categorías MTG descubiertas.")
 
         new_categories = {}
         failures = 0
+        category_total = len(categories)
+        crawl_started = time.time()
+        collected_rows = 0
+        print("[FASE 1/2] Recorriendo categorías y publicaciones de Mercadia...", flush=True)
+        _print_progress("CATÁLOGO", 0, category_total, crawl_started, detail="iniciando")
         for index, category in enumerate(categories, start=1):
             url = category["url"]
             old = previous_categories.get(url) or {}
-            print(f"[{index}/{len(categories)}] {category['name']}", flush=True)
-            progress_detail = category["name"]
+            print(f"\n[{index}/{category_total}] {category['name']}", flush=True)
+
+            def _page_progress(page: int, row_count: int, has_next: bool) -> None:
+                # Show the first page, every fifth page and the final page so a
+                # large category never looks frozen while it is being crawled.
+                if page == 1 or page % 5 == 0 or not has_next:
+                    state = "continúa" if has_next else "fin"
+                    print(
+                        f"    [PÁGINA {page}] {row_count} publicación(es) acumuladas · {state}",
+                        flush=True,
+                    )
+
             try:
-                rows = _crawl_category(adapter, category)
+                rows = _crawl_category(adapter, category, page_callback=_page_progress)
                 new_categories[url] = {
                     "name": category["name"],
                     "group": category.get("group"),
                     "synced_at": time.time(),
                     "rows": rows,
                 }
-                progress_detail = f"{category['name']} · {len(rows)} publicaciones"
+                collected_rows += len(rows)
                 print(f"    [OK] {len(rows)} publicación(es) en stock", flush=True)
             except Exception as exc:
                 failures += 1
                 if old:
                     new_categories[url] = old
-                    progress_detail = f"{category['name']} · snapshot anterior conservado"
+                    collected_rows += len(old.get("rows") or [])
                     print(f"    [WARN] {type(exc).__name__}: {exc} — conservo el último snapshot local", flush=True)
                 else:
-                    progress_detail = f"{category['name']} · error"
                     print(f"    [ERROR] {type(exc).__name__}: {exc}", flush=True)
 
             _print_progress(
-                stage="Catálogo",
-                current=index,
-                total=len(categories),
-                stage_started=crawl_started,
-                overall_start_pct=0.0,
-                overall_end_pct=90.0,
-                detail=progress_detail,
+                "CATÁLOGO",
+                index,
+                category_total,
+                crawl_started,
+                detail=f"~{collected_rows} publicaciones recopiladas · {failures} error(es)",
             )
-
             if index % 10 == 0:
                 checkpoint_categories = dict(previous_categories)
                 checkpoint_categories.update(new_categories)
@@ -437,7 +434,7 @@ def main() -> int:
         _save_state(local_state)
         rows = _catalog_union(new_categories)
         elapsed = int(time.time() - started)
-        print(f"[INFO] Catálogo local: {len(rows)} publicaciones únicas. Subiendo a Fetchuccini...", flush=True)
+        print(f"[INFO] Catálogo local: {len(rows)} publicaciones únicas. Subiendo a Fetchuccini...")
         metadata = {
             "category_count": len(categories),
             "failed_category_count": failures,
@@ -447,7 +444,7 @@ def main() -> int:
         _upload_catalog(base_url, headers, rows, metadata)
         if failures:
             print(f"[WARN] {failures} categoría(s) fallaron; se conservaron datos anteriores cuando existían.")
-        print(f"[OK] Sincronización completa terminada en {elapsed // 60}m {elapsed % 60}s.", flush=True)
+        print(f"[OK] Sincronización completa terminada en {elapsed // 60}m {elapsed % 60}s.")
         return 0
     except requests.HTTPError as exc:
         if exc.response is not None and exc.response.status_code == 403 and "fetchuccini" in str(exc.request.url).lower():

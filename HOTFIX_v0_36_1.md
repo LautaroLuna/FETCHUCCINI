@@ -1,34 +1,26 @@
 # HOTFIX v0.36.1 — progreso visible del Mercadia Bridge
 
-## Cambios
-- El CMD del bridge ahora muestra la salida en vivo **y** la guarda simultáneamente en `mercadia_bridge.log`.
-- La sincronización completa de Mercadia muestra **porcentaje total de progreso**.
-- Durante el rastreo se muestra:
-  - porcentaje aproximado total
-  - categoría actual / total
+## Cambio
+- El CMD del bridge ahora muestra **progreso en vivo** durante la sincronización completa.
+- La fase de recorrido de Mercadia muestra:
+  - barra ASCII de progreso
+  - porcentaje de categorías completadas
+  - categorías completadas / total
   - tiempo transcurrido
-  - ETA estimada de la etapa
-  - cantidad de publicaciones encontradas en la categoría
-- Durante la subida a Railway se muestra:
-  - porcentaje 90–100%
-  - lote actual / total
-  - publicaciones subidas / total
-  - ETA estimada
-- Al completar aparece explícitamente `100.0%`.
-- Se fuerza UTF-8 en el CMD para que acentos y mensajes se vean correctamente.
-- `/health/` y los headers de diagnóstico reportan ahora la versión `0.36.1`.
+  - ETA estimado
+  - cantidad aproximada de publicaciones recopiladas
+  - número de errores acumulados
+- Las categorías grandes muestran avance por página para que el proceso no parezca trabado.
+- La fase de subida a Railway muestra su propio **porcentaje y ETA por lotes**.
+- `mercadia_bridge_run.bat` ahora muestra la salida en la consola **y al mismo tiempo conserva `mercadia_bridge.log`**.
+- Python se ejecuta en modo `-u` para que la salida no quede bufferizada y el progreso aparezca inmediatamente.
 
 ## Archivos tocados
 - `scripts/mercadia_catalog_sync.py`
 - `mercadia_bridge_run.bat`
-- `config/settings.py`
-- `searchapp/tests/test_scalability.py`
-- `README.md`
 
-## Ejemplo
+## Ejemplo de salida
 ```text
-[PROGRESO]  37.8% | Catálogo 214/510 | transcurrido 19m 12s | ETA 26m 34s | Modern Horizons 3 · 148 publicaciones
-...
-[PROGRESO]  96.4% | Subida 97/152 | transcurrido 1m 08s | ETA 38s | 38800/60401 publicaciones
-[PROGRESO] 100.0% | Sincronización completa
+[PROGRESO CATÁLOGO] [######------------------]  25.0% (38/152) | transcurrido 14:21 | ETA 43:03 | ~15420 publicaciones recopiladas · 0 error(es)
+[PROGRESO SUBIDA]   [############------------]  50.0% (76/152) | transcurrido 00:18 | ETA 00:18 | 30400/60401 publicaciones
 ```
