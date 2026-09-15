@@ -20,6 +20,7 @@ class MagicDealersAdapter(StoreAdapter):
     name = "MagicDealers"
     BASE = "https://www.magicdealersstore.com"
     SEARCH = f"{BASE}/products/search"
+    ADVANCED_SEARCH = f"{BASE}/advanced_search"
 
     # MagicDealers starts returning 503s when detail pages are requested too
     # aggressively. Two workers keeps the search responsive without hammering it.
@@ -244,29 +245,86 @@ class MagicDealersAdapter(StoreAdapter):
             variant_id=row["variant_id"],
         )
 
+    @staticmethod
+    def _looks_like_advanced_search(html: str) -> bool:
+        """Return True when CrystalCommerce rendered the advanced-search page.
+
+        A no-result response still contains the form, so this distinguishes a
+        legitimate empty stock search from an upstream redirect/template change.
+        """
+        text = html or ""
+        return "Advanced Search" in text and "search[in_stock]" in text
+
     def search(self, card_name: str) -> list[Listing]:
         rows = []
         page = 1
         next_url = None
         page_stats = []
+        mode = "advanced-in-stock"
         try:
             while page <= self.MAX_SEARCH_PAGES:
                 page_started = time.perf_counter()
                 try:
                     if next_url:
                         html = self._search_get(urljoin(self.BASE, next_url)).text
+                    elif mode == "advanced-in-stock":
+                        # CrystalCommerce exposes a native stock-only advanced
+                        # search. Using it at the origin is substantially cheaper
+                        # than downloading several pages of sold-out printings
+                        # and discarding them in Fetchuccini afterwards. The
+                        # generated pagination links preserve ``in_stock=1``.
+                        html = self._search_get(
+                            self.ADVANCED_SEARCH,
+                            params={
+                                "search[fuzzy_search]": card_name,
+                                "search[in_stock]": "1",
+                                "buylist_mode": "0",
+                                "search[sort]": "name",
+                                "search[direction]": "ascend",
+                                "commit": "Search",
+                            },
+                        ).text
+                        if not self._looks_like_advanced_search(html):
+                            # Fail open to the proven legacy endpoint if
+                            # CrystalCommerce changes/redirects Advanced Search.
+                            logger.warning(
+                                "magicdealers advanced search unrecognized; falling back query=%r",
+                                card_name,
+                            )
+                            mode = "legacy"
+                            html = self._search_get(
+                                self.SEARCH,
+                                params={"c": 8, "q": card_name, "page": page},
+                            ).text
                     else:
                         html = self._search_get(
                             self.SEARCH,
                             params={"c": 8, "q": card_name, "page": page},
                         ).text
                 except requests.RequestException as exc:
-                    # If a later pagination request fails, keep the useful pages
-                    # already collected instead of dropping MagicDealers entirely.
-                    if rows:
+                    # If Advanced Search itself is temporarily unavailable, try
+                    # the historical search endpoint once before failing the store.
+                    if not rows and page == 1 and mode == "advanced-in-stock":
+                        logger.warning(
+                            "magicdealers advanced search failed; falling back query=%r error=%s",
+                            card_name,
+                            exc,
+                        )
+                        mode = "legacy"
+                        try:
+                            html = self._search_get(
+                                self.SEARCH,
+                                params={"c": 8, "q": card_name, "page": page},
+                            ).text
+                        except requests.RequestException:
+                            raise exc
+                    elif rows:
+                        # If a later pagination request fails, keep the useful pages
+                        # already collected instead of dropping MagicDealers entirely.
                         self.mark_partial(exc)
                         break
-                    raise
+                    else:
+                        raise
 
                 found, next_url = self._parse_page(html, card_name)
                 page_stats.append({
@@ -320,7 +378,8 @@ class MagicDealersAdapter(StoreAdapter):
 
             if len(page_stats) > 1:
                 logger.info(
-                    "magicdealers pagination query=%r pages=%s requests=%s stats=%s",
+                    "magicdealers pagination mode=%s query=%r pages=%s requests=%s stats=%s",
+                    mode,
                     card_name,
                     len(page_stats),
                     self.http.requests_made,

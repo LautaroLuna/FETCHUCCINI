@@ -138,6 +138,29 @@ class StoreAdapterContractTests(TestCase):
         self.assertEqual(rows[0]["stock"], 2)
         self.assertIsNone(next_url)
 
+    def test_magicdealers_uses_stock_only_advanced_search(self):
+        html = """<h1>Advanced Search</h1><input name="search[in_stock]"><ul><li class="product"><a href="/catalog/brainstorm/123"><img src="/brainstorm.jpg">Brainstorm</a><span class="category">Ice Age</span><span>1 In Stock ARS$ 4.760,00 Moderately Played, English</span></li></ul>"""
+
+        class CaptureMagicDealers(MagicDealersAdapter):
+            def __init__(self):
+                super().__init__()
+                self.calls = []
+            def _search_get(self, url, **kwargs):
+                self.calls.append((url, kwargs))
+                return FakeResponse(text=html)
+
+        adapter = CaptureMagicDealers()
+        try:
+            rows = adapter.search("Brainstorm")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(adapter.calls[0][0], adapter.ADVANCED_SEARCH)
+            params = adapter.calls[0][1]["params"]
+            self.assertEqual(params["search[fuzzy_search]"], "Brainstorm")
+            self.assertEqual(params["search[in_stock]"], "1")
+            self.assertEqual(params["buylist_mode"], "0")
+        finally:
+            adapter._search_session.close()
+
     def test_magicdealers_does_not_force_connection_close(self):
         adapter = MagicDealersAdapter()
         try:
