@@ -78,16 +78,6 @@ class ListingNormalizationTests(TestCase):
         self.assertEqual(deduped[0].condition, "Near Mint")
         self.assertEqual(deduped[0].url, "https://example.test/bolt")
 
-
-    def test_price_change_does_not_create_duplicate_listing_identity(self):
-        rows = [
-            {"store":"Store","card_name":"Bolt","product_id":"P1","condition":"NM","available":True,"stock":1,"price":"10","currency":"USD"},
-            {"store":"Store","card_name":"Bolt","product_id":"P1","condition":"NM","available":True,"stock":1,"price":"9","currency":"USD"},
-        ]
-        deduped = dedupe_listing_dicts(rows)
-        self.assertEqual(len(deduped), 1)
-        self.assertEqual(deduped[0]["price"], "9")
-
     def test_duplicate_dict_rows_are_collapsed(self):
         rows = [
             {"store":"Mercadia","card_name":"Bolt","sku":"A-1","available":True,"stock":1,"price":"10","currency":"ars"},

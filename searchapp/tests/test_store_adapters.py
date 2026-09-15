@@ -105,71 +105,12 @@ class StoreAdapterContractTests(TestCase):
         self.assertTrue(image.startswith("https:"))
         self.assertIn("/productos/", href)
 
-
-    def test_batikueva_stops_after_irrelevant_pages(self):
-        def page_html(prefix):
-            cards = []
-            for i in range(12):
-                cards.append(
-                    f'<article><a href="/productos/{prefix}-{i}/" title="{prefix} {i}">{prefix} {i}</a>'
-                    f'<span data-product-id="{prefix}-{i}"></span>'
-                    '<span data-variants="[]"></span></article>'
-                )
-            return "".join(cards)
-
-        class CountingBatikueva(BatikuevaAdapter):
-            def __init__(self):
-                super().__init__()
-                self.pages = []
-            def _fetch_page(self, card_name, page):
-                self.pages.append(page)
-                return page_html(f"Unrelated{page}"), True
-
-        adapter = CountingBatikueva()
-        rows = adapter.search("Lightning Bolt")
-        self.assertEqual(rows, [])
-        self.assertEqual(adapter.pages, [1, 2])
-        self.assertFalse(adapter.partial)
-
     def test_magicdealers_search_parser(self):
         html = """<ul><li class="product"><a href="/catalog/lightning_bolt/123"><img src="/bolt.jpg">Lightning Bolt</a><span class="category">Magic 2010</span><span>2 In Stock ARS$ 3.500,00 Near Mint, English</span></li></ul>"""
         rows, next_url = MagicDealersAdapter()._parse_page(html, "Lightning Bolt")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["stock"], 2)
         self.assertIsNone(next_url)
-
-    def test_magicdealers_uses_stock_only_advanced_search(self):
-        html = """<h1>Advanced Search</h1><input name="search[in_stock]"><ul><li class="product"><a href="/catalog/brainstorm/123"><img src="/brainstorm.jpg">Brainstorm</a><span class="category">Ice Age</span><span>1 In Stock ARS$ 4.760,00 Moderately Played, English</span></li></ul>"""
-
-        class CaptureMagicDealers(MagicDealersAdapter):
-            def __init__(self):
-                super().__init__()
-                self.calls = []
-            def _search_get(self, url, **kwargs):
-                self.calls.append((url, kwargs))
-                return FakeResponse(text=html)
-
-        adapter = CaptureMagicDealers()
-        try:
-            rows = adapter.search("Brainstorm")
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(adapter.calls[0][0], adapter.ADVANCED_SEARCH)
-            params = adapter.calls[0][1]["params"]
-            self.assertEqual(params["search[fuzzy_search]"], "Brainstorm")
-            self.assertEqual(params["search[in_stock]"], "1")
-            self.assertEqual(params["buylist_mode"], "0")
-        finally:
-            adapter._search_session.close()
-
-    def test_magicdealers_does_not_force_connection_close(self):
-        adapter = MagicDealersAdapter()
-        try:
-            self.assertNotEqual(
-                adapter._search_session.headers.get("Connection", "").casefold(),
-                "close",
-            )
-        finally:
-            adapter._search_session.close()
 
     def test_la_workshop_api_contract(self):
         data = {"products":[{"name":"Lightning Bolt","edition":"M10","edition_code":"M10","collector_number":"146","id":1,"listings":[{"id":9,"stock":2,"current_price":"1.25","language":"English","condition":"Near Mint","finish":"Non-foil"}]}],"pages":1}

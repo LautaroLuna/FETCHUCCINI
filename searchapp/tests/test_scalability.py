@@ -6,8 +6,8 @@ from django.http import HttpResponse
 from django.test import RequestFactory
 
 from searchapp import views
-from searchapp.middleware import RequestObservabilityMiddleware
 from searchapp.version import __version__
+from searchapp.middleware import RequestObservabilityMiddleware
 from searchapp.services.cache_runtime import cache_health
 from searchapp.services.metrics import metrics_snapshot, record_store_result
 

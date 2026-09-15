@@ -1,4 +1,4 @@
-# Fetchuccini — v0.37.4
+# Fetchuccini — v0.37.5
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 
@@ -10,10 +10,7 @@ Comparador de precios y stock de cartas de Magic: The Gathering para:
 - La Workshop TCG
 - StarCityGames
 
-> **v0.37.4** consolida la arquitectura progresiva actual y optimiza la paginación de MagicDealers reutilizando la conexión HTTP/TLS. El frontend usa `/api/search/cache/` y `/api/search/store/`; `/api/search/` se conserva solo por compatibilidad y ahora recorre el mismo pipeline protegido. Mercadia en producción responde prioritariamente desde el catálogo persistente subido por el Bridge de Windows.
-
-
-## Estado actual
+## Qué incluye esta primera versión
 
 - Django con una sola pantalla de búsqueda.
 - API interna `GET /api/search/?q=Lightning+Bolt`.
@@ -239,31 +236,3 @@ La v0.12 incluye configuración para Render (`render.yaml`, `build.sh`, WhiteNoi
 - `/health/` ampliado con versión, uptime, cache, catálogo Mercadia y circuit breakers; `?details=1` suma métricas por tienda.
 - `X-Request-ID`, `X-Fetchuccini-Version` y `Server-Timing` para diagnóstico.
 - Gunicorn se configura desde `gunicorn.conf.py` y permite ajustar workers/threads por variables de entorno.
-
-## v0.37.0 — consolidación y presupuesto de búsqueda
-
-- Se incorpora dentro de v0.37 el hotfix previsto como v0.36.2.
-- Se corrige la regresión donde `store_keys=[]` se interpretaba como “todas las tiendas”.
-- `SECRET_KEY` pasa a ser obligatoria cuando `DEBUG=False`; producción falla de forma segura si falta.
-- La versión se centraliza en `searchapp/version.py` y se reutiliza en health, headers y User-Agent.
-- Nuevo `STORE_REGISTRY` como fuente única de identidad, moneda y política operativa de cada tienda.
-- Cada búsqueda live tiene un presupuesto de tiempo y cantidad de requests por tienda.
-- Los adapters paginados conservan resultados parciales cuando una página posterior falla o alcanza el presupuesto.
-- Los resultados parciales usan caché corta y no pisan un snapshot stale completo existente.
-- `/api/search/` usa el mismo pipeline de cache, single-flight, circuit breaker y stale fallback que el frontend progresivo.
-- Búsqueda mínima configurable (`FETCHUCCINI_MIN_QUERY_LENGTH`, default 2).
-- El template de tiendas y los labels del frontend se generan desde el registro, eliminando duplicación de configuración.
-- El frontend renderiza únicamente la vista activa (tabla o tarjetas) en cada actualización y limpia correctamente la UI al navegar hacia atrás a una URL sin query.
-- Los locks de refresh usan compare-and-delete atómico en Redis.
-- La identidad de deduplicación ya no incluye precio, porque el precio es estado mutable de una publicación.
-- CI usa la misma versión de Python indicada por `.python-version` y valida también `compileall`, `manage.py check` y sintaxis JavaScript.
-- Se corrige `mercadia_bridge_setup.bat` para que el mensaje del historial no se intente ejecutar como comando.
-
-### Variable obligatoria antes de desplegar
-
-En Railway, v0.37 requiere una variable `SECRET_KEY` no vacía. Podés generar una localmente con Python y copiar el resultado a Railway:
-
-```powershell
-py -c "import secrets; print(secrets.token_urlsafe(64))"
-```
-

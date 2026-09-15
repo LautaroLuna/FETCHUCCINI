@@ -35,18 +35,3 @@ class FrontendResponsiveContractTests(TestCase):
         self.assertIn("catalog-warning", js)
         self.assertIn("catalog-stale", js)
         self.assertIn("catálogo desactualizado", js)
-    def test_v037_store_registry_drives_frontend_labels_and_min_query(self):
-        template = (ROOT / "searchapp/templates/searchapp/index.html").read_text(encoding="utf-8")
-        js = (ROOT / "searchapp/static/searchapp/app.js").read_text(encoding="utf-8")
-        self.assertIn('{% for store in stores %}', template)
-        self.assertIn('data-store-label="{{ store.name }}"', template)
-        self.assertIn('minlength="{{ min_query_length }}"', template)
-        self.assertIn('const MIN_QUERY_LENGTH', js)
-        self.assertIn("Object.fromEntries", js)
-
-    def test_v037_renders_only_active_results_view(self):
-        js = (ROOT / "searchapp/static/searchapp/app.js").read_text(encoding="utf-8")
-        self.assertIn("if(currentView === 'table') renderTable(currentPageRows);", js)
-        self.assertIn("else renderCards(currentPageRows);", js)
-        self.assertIn("else clearSearchUI();", js)
-

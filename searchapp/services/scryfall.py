@@ -1,6 +1,5 @@
 from functools import lru_cache
 from .http import HttpClient
-from searchapp.version import __version__
 
 
 class ScryfallService:
@@ -42,7 +41,7 @@ class ScryfallService:
                 f"{self.BASE}/cards/autocomplete",
                 params={"q": query},
                 headers={
-                    "User-Agent": f"Fetchuccini/{__version__} (MTG price comparison; https://github.com/LautaroLuna/FETCHUCCINI)",
+                    "User-Agent": "Fetchuccini/0.16 (MTG price comparison; https://github.com/LautaroLuna/FETCHUCCINI)",
                     "Accept": "application/json;q=0.9,*/*;q=0.8",
                 },
             )

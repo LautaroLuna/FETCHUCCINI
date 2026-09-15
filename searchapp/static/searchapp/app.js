@@ -35,7 +35,7 @@ let currentPageRows = [];
 let currentPage = 1;
 const PAGE_SIZE = 24;
 const MAX_PARALLEL_STORES = 4;
-const MIN_QUERY_LENGTH = Math.max(2, Number(document.body.dataset.minQueryLength || 2));
+const MIN_QUERY_LENGTH = Math.max(2, Number(q.minLength || 2));
 let preferredView = localStorage.getItem('fetchuccini:view') || 'cards';
 let currentView = preferredView;
 const activeSearchControllers = new Set();
@@ -58,12 +58,15 @@ const PREF_KEYS = {
   priceOrder: 'fetchuccini:price-order',
 };
 
-const STORE_LABELS = Object.fromEntries(
-  [...document.querySelectorAll('#stores input[type=checkbox]')].map(input => [
-    input.value,
-    input.dataset.storeLabel || input.value,
-  ])
-);
+const STORE_LABELS = {
+  pirulo: 'Pirulo',
+  mercadia: 'Mercadia',
+  magic_lair: 'Magic Lair',
+  batikueva: 'La Batikueva',
+  magicdealers: 'MagicDealers',
+  la_workshop: 'La Workshop',
+  starcitygames: 'StarCityGames',
+};
 
 function safeJsonParse(value, fallback){
   try{ return JSON.parse(value); }catch(_err){ return fallback; }
@@ -633,7 +636,7 @@ function formatAge(seconds){
 }
 
 function isStoreFinished(state){
-  return ['done','cached','partial','error','stale-error','catalog-warning','catalog-stale'].includes(state?.status);
+  return ['done','cached','error','stale-error','catalog-warning','catalog-stale'].includes(state?.status);
 }
 
 const ONLINE_CONNECTION_ERROR = 'No se pudo conectar a la pagina online';
@@ -686,9 +689,6 @@ function renderStoreStates(){
     }
     if(state.status === 'error'){
       return `<span class="pill error"${title}>${esc(label)}: ${esc(friendlyStoreError(state.error))}</span>`;
-    }
-    if(state.status === 'partial'){
-      return `<span class="pill stale"${title}>${esc(label)}: ${count} · resultados parciales · ${elapsed} ms</span>`;
     }
     if(state.status === 'done'){
       return `<span class="pill cached">${esc(label)}: ${count} · ${elapsed} ms</span>`;
@@ -757,16 +757,6 @@ function applyStorePayload(key, data, {fromSnapshot=false}={}){
       age_seconds: data.bridge_age_seconds ?? data.age_seconds ?? 0,
       bridge: true,
       error: 'El catálogo de Mercadia está más antiguo de lo habitual.',
-    });
-  }else if(data.partial){
-    storeStates.set(key, {
-      status: 'partial',
-      label,
-      count: (data.results || []).length,
-      elapsed_ms: info.elapsed_ms || 0,
-      age_seconds: data.age_seconds ?? 0,
-      bridge: !!data.bridge,
-      error: data.warning || 'La tienda respondió parcialmente antes de alcanzar el límite de búsqueda.',
     });
   }else if(data.stale){
     storeStates.set(key, {

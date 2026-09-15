@@ -216,14 +216,12 @@ def listing_identity_key(row) -> str:
             "currency",
         )
     )
-    # Price is mutable state, not listing identity. Keeping it out of the key
-    # lets cache/pages collapse the same variant when an upstream sale price
-    # changes between responses. Variant/SKU remains the strongest identity.
+    price = str(_field(row, "price") or "")
     if product_id not in (None, ""):
-        return f"{store}|product:{product_id}|{attributes}"
+        return f"{store}|product:{product_id}|{attributes}|{price}"
     if url:
-        return f"{store}|url:{url}|{attributes}"
-    return f"{store}|attrs:{attributes}"
+        return f"{store}|url:{url}|{attributes}|{price}"
+    return f"{store}|attrs:{attributes}|{price}"
 
 
 def _listing_score(row) -> int:
@@ -246,10 +244,6 @@ def _merged_listing(current: Listing, incoming: Listing) -> Listing:
         if value in (None, ""):
             value = getattr(other, name)
         values[name] = value
-    # Price is mutable; when the same listing appears again, prefer the most
-    # recently observed non-null price rather than preserving an older value.
-    if incoming.price is not None:
-        values["price"] = incoming.price
     stocks = [s for s in (current.stock, incoming.stock) if isinstance(s, int)]
     if stocks:
         values["stock"] = max(stocks)
@@ -287,8 +281,6 @@ def dedupe_listing_dicts(rows: Iterable[dict]) -> list[dict]:
         for field, value in other.items():
             if merged.get(field) in (None, "") and value not in (None, ""):
                 merged[field] = value
-        if row.get("price") not in (None, ""):
-            merged["price"] = row.get("price")
         stocks = [s for s in (current.get("stock"), row.get("stock")) if isinstance(s, int)]
         if stocks:
             merged["stock"] = max(stocks)

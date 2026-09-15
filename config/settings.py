@@ -26,8 +26,6 @@ FETCHUCCINI_TRUST_PROXY_HEADERS = (
     or (os.environ.get("FETCHUCCINI_TRUST_PROXY_HEADERS") or "").strip().lower() in {"1", "true", "yes", "on"}
 )
 
-# Local development may use a harmless fallback. Production must fail closed
-# rather than silently booting with a public, predictable Django signing key.
 _secret_key = (os.environ.get("SECRET_KEY") or "").strip()
 if not _secret_key and not DEBUG:
     raise ImproperlyConfigured("SECRET_KEY is required when DEBUG=False")
@@ -244,11 +242,6 @@ LOGGING = {
             "propagate": False,
         },
         "searchapp.services.aggregator": {
-            "handlers": ["console"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "searchapp.services.stores.magicdealers": {
             "handlers": ["console"],
             "level": "INFO",
             "propagate": False,

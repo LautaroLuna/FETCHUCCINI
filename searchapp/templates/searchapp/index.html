@@ -22,14 +22,14 @@
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{% static 'searchapp/style.css' %}">
 </head>
-<body data-min-query-length="{{ min_query_length }}">
+<body>
   <main class="shell">
     <header class="hero">
       <div class="hero-copy">
         <p class="eyebrow">FETCHUCCINI</p>
         <h1>Compará precio y stock en todas las tiendas</h1>
         <p class="sub">Buscá una carta y compará en segundos precio, stock, edición, idioma, condición y acabado entre todas tus tiendas favoritas.</p>
-        <div class="hero-stores">{% for store in stores %}{{ store.name }}{% if not forloop.last %} <span>•</span> {% endif %}{% endfor %}</div>
+        <div class="hero-stores">Pirulo <span>•</span> Mercadia <span>•</span> Magic Lair <span>•</span> La Batikueva <span>•</span> MagicDealers <span>•</span> La Workshop <span>•</span> StarCityGames</div>
       </div>
     </header>
 
@@ -46,7 +46,7 @@
             aria-autocomplete="list"
             aria-controls="autocomplete"
             aria-expanded="false"
-            minlength="{{ min_query_length }}"
+            minlength="{{ min_query_length|default:2 }}"
             required
           >
           <div id="autocomplete" class="autocomplete hidden" role="listbox" aria-label="Sugerencias de cartas"></div>
@@ -54,22 +54,24 @@
         <button class="search-button" type="submit">Buscar</button>
       </form>
       <div class="store-grid" id="stores">
-        {% for store in stores %}
-        <label class="{% if store.disabled %}store-option-disabled{% endif %}">
-          <input
-            type="checkbox"
-            value="{{ store.key }}"
-            data-store-label="{{ store.name }}"
-            {% if store.disabled %}disabled{% else %}checked{% endif %}
-          >
-          {{ store.name }}{% if store.disabled %}<span class="store-option-note">No disponible online</span>{% endif %}
+        <label class="{% if 'pirulo' in disabled_store_keys %}store-option-disabled{% endif %}">
+          <input type="checkbox" value="pirulo" {% if 'pirulo' in disabled_store_keys %}disabled{% else %}checked{% endif %}>
+          Pirulo{% if 'pirulo' in disabled_store_keys %}<span class="store-option-note">No disponible online</span>{% endif %}
         </label>
-        {% endfor %}
+        <label class="{% if 'mercadia' in disabled_store_keys %}store-option-disabled{% endif %}">
+          <input type="checkbox" value="mercadia" {% if 'mercadia' in disabled_store_keys %}disabled{% else %}checked{% endif %}>
+          Mercadia{% if 'mercadia' in disabled_store_keys %}<span class="store-option-note">No disponible online</span>{% endif %}
+        </label>
+        <label><input type="checkbox" value="magic_lair" checked> Magic Lair</label>
+        <label><input type="checkbox" value="batikueva" checked> La Batikueva</label>
+        <label><input type="checkbox" value="magicdealers" checked> MagicDealers</label>
+        <label><input type="checkbox" value="la_workshop" checked> La Workshop</label>
+        <label><input type="checkbox" value="starcitygames" checked> StarCityGames</label>
       </div>
       {% if disabled_store_count %}
       <div class="online-availability-note">
         <strong>{{ enabled_store_count }} tiendas disponibles online.</strong>
-        <span>Las tiendas marcadas como no disponibles quedan excluidas automáticamente para evitar demoras y errores.</span>
+        <span>Pirulo y Mercadia no aceptan actualmente consultas desde servidores públicos, por eso no se consultan para evitar demoras y errores.</span>
       </div>
       {% endif %}
     </section>

@@ -136,11 +136,10 @@ class MagicLairAdapter(StoreAdapter):
                     f"{self.BASE}/search",
                     params={"q": card_name, "type": "product", "page": page},
                 )
-            except requests.RequestException as exc:
-                # If a later page is throttled/budget-limited, keep the useful
-                # results already collected and expose that they are partial.
+            except requests.RequestException:
+                # If a later page is throttled, keep the useful results already
+                # collected instead of failing the entire store.
                 if out:
-                    self.mark_partial(exc)
                     break
                 raise
 
