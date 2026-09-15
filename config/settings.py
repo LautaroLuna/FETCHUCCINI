@@ -248,6 +248,11 @@ LOGGING = {
             "level": "INFO",
             "propagate": False,
         },
+        "searchapp.services.stores.magicdealers": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
         "searchapp.services.resilience": {
             "handlers": ["console"],
             "level": "INFO",

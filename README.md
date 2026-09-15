@@ -1,4 +1,4 @@
-# Fetchuccini — v0.37.2
+# Fetchuccini — v0.37.3
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 
@@ -10,7 +10,7 @@ Comparador de precios y stock de cartas de Magic: The Gathering para:
 - La Workshop TCG
 - StarCityGames
 
-> **v0.37.2** consolida la arquitectura progresiva actual y optimiza la paginación de MagicDealers reutilizando la conexión HTTP/TLS. El frontend usa `/api/search/cache/` y `/api/search/store/`; `/api/search/` se conserva solo por compatibilidad y ahora recorre el mismo pipeline protegido. Mercadia en producción responde prioritariamente desde el catálogo persistente subido por el Bridge de Windows.
+> **v0.37.3** consolida la arquitectura progresiva actual y optimiza la paginación de MagicDealers reutilizando la conexión HTTP/TLS. El frontend usa `/api/search/cache/` y `/api/search/store/`; `/api/search/` se conserva solo por compatibilidad y ahora recorre el mismo pipeline protegido. Mercadia en producción responde prioritariamente desde el catálogo persistente subido por el Bridge de Windows.
 
 
 ## Estado actual
