@@ -56,6 +56,6 @@ echo.
 echo Despues de agregar la variable en Railway y esperar el redeploy,
 echo podes hacer doble click en mercadia_bridge_manual.bat para crear/subir el catalogo ya.
 echo La version manual muestra porcentaje, ETA aproximada y deja la ventana abierta.
-El historial automatico queda en mercadia_bridge.log.
+echo El historial automatico queda en mercadia_bridge.log.
 echo.
 pause

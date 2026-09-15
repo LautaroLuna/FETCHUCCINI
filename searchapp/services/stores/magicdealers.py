@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 from urllib.parse import urljoin
@@ -7,7 +8,11 @@ from bs4 import BeautifulSoup
 
 from .base import StoreAdapter
 from ..models import Listing
+from ..http import SearchBudgetExceeded
 from ..utils import as_int, exactish_card_name, normalize_space, parse_ars
+
+
+logger = logging.getLogger(__name__)
 
 
 class MagicDealersAdapter(StoreAdapter):
@@ -15,6 +20,7 @@ class MagicDealersAdapter(StoreAdapter):
     name = "MagicDealers"
     BASE = "https://www.magicdealersstore.com"
     SEARCH = f"{BASE}/products/search"
+    ADVANCED_SEARCH = f"{BASE}/advanced_search"
 
     # MagicDealers starts returning 503s when detail pages are requested too
     # aggressively. Two workers keeps the search responsive without hammering it.
@@ -37,9 +43,28 @@ class MagicDealersAdapter(StoreAdapter):
         ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "es-AR,es;q=0.9,en-US;q=0.8,en;q=0.7",
-        # Avoid reusing a TLS connection that the origin may have already closed.
-        "Connection": "close",
     }
+
+    def __init__(self, http=None):
+        super().__init__(http=http)
+        self._new_search_session()
+
+    def _new_search_session(self):
+        """Create the short-lived Session used only by one store search.
+
+        A MagicDealers adapter instance is created per Fetchuccini search, so
+        keeping this Session alive only reuses TLS across that search's own
+        pagination. If CrystalCommerce closes a pooled connection unexpectedly,
+        ``_search_get`` replaces the Session and retries once with a fresh one.
+        """
+        old = getattr(self, "_search_session", None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        self._search_session = requests.Session()
+        self._search_session.headers.update(self.SEARCH_HEADERS)
 
     def _search_get(self, url: str, **kwargs):
         """Fetch a MagicDealers search page with a small, bounded retry budget.
@@ -61,18 +86,26 @@ class MagicDealersAdapter(StoreAdapter):
 
         for attempt in range(1, self.SEARCH_ATTEMPTS + 1):
             try:
-                response = requests.get(
+                # Reuse the TLS connection across pagination. This removes a
+                # full TCP/TLS setup from every page while remaining strictly
+                # sequential (we do not increase pressure on MagicDealers).
+                response = self._search_session.get(
                     url,
                     params=params,
                     headers=headers,
-                    timeout=self.SEARCH_TIMEOUT_SECONDS,
+                    timeout=self.http.reserve_request(self.SEARCH_TIMEOUT_SECONDS),
                     **kwargs,
                 )
                 response.raise_for_status()
                 return response
+            except SearchBudgetExceeded:
+                raise
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < self.SEARCH_ATTEMPTS:
+                    # CrystalCommerce occasionally kills a keep-alive socket.
+                    # Throw away that pool so the retry is genuinely fresh.
+                    self._new_search_session()
                     time.sleep(self.SEARCH_BACKOFF_SECONDS * attempt)
 
         raise last_error
@@ -212,68 +245,151 @@ class MagicDealersAdapter(StoreAdapter):
             variant_id=row["variant_id"],
         )
 
+    @staticmethod
+    def _looks_like_advanced_search(html: str) -> bool:
+        """Return True when CrystalCommerce rendered the advanced-search page.
+
+        A no-result response still contains the form, so this distinguishes a
+        legitimate empty stock search from an upstream redirect/template change.
+        """
+        text = html or ""
+        return "Advanced Search" in text and "search[in_stock]" in text
+
     def search(self, card_name: str) -> list[Listing]:
         rows = []
         page = 1
         next_url = None
-        while page <= self.MAX_SEARCH_PAGES:
-            try:
-                if next_url:
-                    html = self._search_get(urljoin(self.BASE, next_url)).text
-                else:
-                    html = self._search_get(
-                        self.SEARCH,
-                        params={"c": 8, "q": card_name, "page": page},
-                    ).text
-            except requests.RequestException:
-                # If a later pagination request fails, keep the useful pages
-                # already collected instead of dropping MagicDealers entirely.
-                if rows:
+        page_stats = []
+        mode = "advanced-in-stock"
+        try:
+            while page <= self.MAX_SEARCH_PAGES:
+                page_started = time.perf_counter()
+                try:
+                    if next_url:
+                        html = self._search_get(urljoin(self.BASE, next_url)).text
+                    elif mode == "advanced-in-stock":
+                        # CrystalCommerce exposes a native stock-only advanced
+                        # search. Using it at the origin is substantially cheaper
+                        # than downloading several pages of sold-out printings
+                        # and discarding them in Fetchuccini afterwards. The
+                        # generated pagination links preserve ``in_stock=1``.
+                        html = self._search_get(
+                            self.ADVANCED_SEARCH,
+                            params={
+                                "search[fuzzy_search]": card_name,
+                                "search[in_stock]": "1",
+                                "buylist_mode": "0",
+                                "search[sort]": "name",
+                                "search[direction]": "ascend",
+                                "commit": "Search",
+                            },
+                        ).text
+                        if not self._looks_like_advanced_search(html):
+                            # Fail open to the proven legacy endpoint if
+                            # CrystalCommerce changes/redirects Advanced Search.
+                            logger.warning(
+                                "magicdealers advanced search unrecognized; falling back query=%r",
+                                card_name,
+                            )
+                            mode = "legacy"
+                            html = self._search_get(
+                                self.SEARCH,
+                                params={"c": 8, "q": card_name, "page": page},
+                            ).text
+                    else:
+                        html = self._search_get(
+                            self.SEARCH,
+                            params={"c": 8, "q": card_name, "page": page},
+                        ).text
+                except requests.RequestException as exc:
+                    # If Advanced Search itself is temporarily unavailable, try
+                    # the historical search endpoint once before failing the store.
+                    if not rows and page == 1 and mode == "advanced-in-stock":
+                        logger.warning(
+                            "magicdealers advanced search failed; falling back query=%r error=%s",
+                            card_name,
+                            exc,
+                        )
+                        mode = "legacy"
+                        try:
+                            html = self._search_get(
+                                self.SEARCH,
+                                params={"c": 8, "q": card_name, "page": page},
+                            ).text
+                        except requests.RequestException:
+                            raise exc
+                    elif rows:
+                        # If a later pagination request fails, keep the useful pages
+                        # already collected instead of dropping MagicDealers entirely.
+                        self.mark_partial(exc)
+                        break
+                    else:
+                        raise
+
+                found, next_url = self._parse_page(html, card_name)
+                page_stats.append({
+                    "page": page,
+                    "ms": int((time.perf_counter() - page_started) * 1000),
+                    "matched": len(found),
+                    "in_stock": sum(1 for row in found if (row.get("stock") or 0) > 0),
+                })
+                # CrystalCommerce sorts search results by relevance. Once a page has
+                # no card whose name starts with the requested prefix, continuing
+                # through the remaining result pages only adds latency.
+                if not found:
                     break
-                raise
+                rows.extend(found)
+                if not next_url:
+                    break
+                page += 1
 
-            found, next_url = self._parse_page(html, card_name)
-            # CrystalCommerce sorts search results by relevance. Once a page has
-            # no card whose name starts with the requested prefix, continuing
-            # through the remaining result pages only adds latency.
-            if not found:
-                break
-            rows.extend(found)
-            if not next_url:
-                break
-            page += 1
+            if not rows:
+                return []
 
-        if not rows:
-            return []
+            # _build_listing no longer performs network I/O, so a thread pool only
+            # adds overhead. Build the normalized rows directly and keep stock-only
+            # publications, which is Fetchuccini's global policy.
+            listings = []
+            for row in rows:
+                try:
+                    item = self._build_listing(card_name, row)
+                except Exception:
+                    title = row["title"]
+                    display_name = title.split(" - ", 1)[0].strip() or card_name
+                    item = Listing(
+                        store=self.name,
+                        card_name=display_name,
+                        set_name=row.get("set_name"),
+                        language=row["language"],
+                        condition=row["condition"],
+                        finish="Foil" if "foil" in title.casefold() else None,
+                        style=title.split(" - ", 1)[1] if " - " in title else None,
+                        price=row["price"],
+                        currency="ARS",
+                        stock=row["stock"],
+                        available=(row["stock"] or 0) > 0 if row["stock"] is not None else None,
+                        url=row["url"],
+                        image_url=row.get("image_url"),
+                        product_id=row["product_id"],
+                        variant_id=row["variant_id"],
+                    )
+                if item.available and (item.stock is None or item.stock > 0):
+                    listings.append(item)
 
-        # _build_listing no longer performs network I/O, so a thread pool only
-        # adds overhead. Build the normalized rows directly and keep stock-only
-        # publications, which is Fetchuccini's global policy.
-        listings = []
-        for row in rows:
-            try:
-                item = self._build_listing(card_name, row)
-            except Exception:
-                title = row["title"]
-                display_name = title.split(" - ", 1)[0].strip() or card_name
-                item = Listing(
-                    store=self.name,
-                    card_name=display_name,
-                    set_name=row.get("set_name"),
-                    language=row["language"],
-                    condition=row["condition"],
-                    finish="Foil" if "foil" in title.casefold() else None,
-                    style=title.split(" - ", 1)[1] if " - " in title else None,
-                    price=row["price"],
-                    currency="ARS",
-                    stock=row["stock"],
-                    available=(row["stock"] or 0) > 0 if row["stock"] is not None else None,
-                    url=row["url"],
-                    image_url=row.get("image_url"),
-                    product_id=row["product_id"],
-                    variant_id=row["variant_id"],
+            if len(page_stats) > 1:
+                logger.info(
+                    "magicdealers pagination mode=%s query=%r pages=%s requests=%s stats=%s",
+                    mode,
+                    card_name,
+                    len(page_stats),
+                    self.http.requests_made,
+                    page_stats,
                 )
-            if item.available and (item.stock is None or item.stock > 0):
-                listings.append(item)
-
-        return listings
+            return listings
+        finally:
+            # Adapter instances are one-shot, but close explicitly so a failed
+            # request cannot leave an idle socket around until GC runs.
+            try:
+                self._search_session.close()
+            except Exception:
+                pass

@@ -1,24 +1,37 @@
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
+from searchapp.version import __version__
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-FETCHUCCINI_VERSION = "0.36"
+FETCHUCCINI_VERSION = __version__
 FETCHUCCINI_STORE_CONCURRENCY = max(1, int(os.environ.get("FETCHUCCINI_STORE_CONCURRENCY", "4")))
 FETCHUCCINI_GLOBAL_STORE_CONCURRENCY = max(1, int(os.environ.get("FETCHUCCINI_GLOBAL_STORE_CONCURRENCY", "6")))
 FETCHUCCINI_STORE_GATE_WAIT_SECONDS = max(1.0, float(os.environ.get("FETCHUCCINI_STORE_GATE_WAIT_SECONDS", "20")))
 FETCHUCCINI_REFRESH_LOCK_SECONDS = max(10, int(os.environ.get("FETCHUCCINI_REFRESH_LOCK_SECONDS", "60")))
 FETCHUCCINI_REFRESH_WAIT_SECONDS = max(0.2, float(os.environ.get("FETCHUCCINI_REFRESH_WAIT_SECONDS", "2.5")))
-
-# Local development keeps a harmless fallback key. Production (Render) receives
-# a generated SECRET_KEY through environment variables.
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-change-me")
+FETCHUCCINI_MIN_QUERY_LENGTH = max(2, int(os.environ.get("FETCHUCCINI_MIN_QUERY_LENGTH", "2")))
 
 is_render = bool(os.environ.get("RENDER"))
 is_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT_NAME") or os.environ.get("RAILWAY_SERVICE_ID"))
 
 _default_debug = "False" if (is_render or is_railway) else "True"
 DEBUG = os.environ.get("DEBUG", _default_debug).strip().lower() in {"1", "true", "yes", "on"}
+FETCHUCCINI_TRUST_PROXY_HEADERS = (
+    is_render
+    or is_railway
+    or (os.environ.get("FETCHUCCINI_TRUST_PROXY_HEADERS") or "").strip().lower() in {"1", "true", "yes", "on"}
+)
+
+# Local development may use a harmless fallback. Production must fail closed
+# rather than silently booting with a public, predictable Django signing key.
+_secret_key = (os.environ.get("SECRET_KEY") or "").strip()
+if not _secret_key and not DEBUG:
+    raise ImproperlyConfigured("SECRET_KEY is required when DEBUG=False")
+SECRET_KEY = _secret_key or "dev-only-change-me"
 
 ALLOWED_HOSTS = ["127.0.0.1", "localhost"]
 
@@ -231,6 +244,11 @@ LOGGING = {
             "propagate": False,
         },
         "searchapp.services.aggregator": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "searchapp.services.stores.magicdealers": {
             "handlers": ["console"],
             "level": "INFO",
             "propagate": False,
