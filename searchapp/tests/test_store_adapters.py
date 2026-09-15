@@ -138,6 +138,16 @@ class StoreAdapterContractTests(TestCase):
         self.assertEqual(rows[0]["stock"], 2)
         self.assertIsNone(next_url)
 
+    def test_magicdealers_does_not_force_connection_close(self):
+        adapter = MagicDealersAdapter()
+        try:
+            self.assertNotEqual(
+                adapter._search_session.headers.get("Connection", "").casefold(),
+                "close",
+            )
+        finally:
+            adapter._search_session.close()
+
     def test_la_workshop_api_contract(self):
         data = {"products":[{"name":"Lightning Bolt","edition":"M10","edition_code":"M10","collector_number":"146","id":1,"listings":[{"id":9,"stock":2,"current_price":"1.25","language":"English","condition":"Near Mint","finish":"Non-foil"}]}],"pages":1}
         rows = LaWorkshopAdapter(http=QueueHttp([FakeResponse(data=data)])).search("Lightning Bolt")
