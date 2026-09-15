@@ -53,18 +53,14 @@ RATE_LIMITS = {
 
 
 def _client_ip(request) -> str:
-    # Trust forwarded client-IP headers only behind the configured platform proxy.
-    if bool(getattr(settings, "FETCHUCCINI_TRUST_PROXY_HEADERS", False)):
-        real_ip = (request.META.get("HTTP_X_REAL_IP") or "").strip()
-        if real_ip:
-            return real_ip
-        forwarded = [
-            part.strip()
-            for part in (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")
-            if part.strip()
-        ]
-        if forwarded:
-            return forwarded[0]
+    # Railway exposes the original remote address as X-Real-IP. Keep
+    # X-Forwarded-For/REMOTE_ADDR fallbacks for Render and local development.
+    real_ip = (request.META.get("HTTP_X_REAL_IP") or "").strip()
+    if real_ip:
+        return real_ip
+    forwarded = [part.strip() for part in (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",") if part.strip()]
+    if forwarded:
+        return forwarded[0]
     return request.META.get("REMOTE_ADDR") or "unknown"
 
 
@@ -172,7 +168,6 @@ def index(request):
         "disabled_store_keys": disabled,
         "disabled_store_count": len(disabled),
         "enabled_store_count": max(0, 7 - len(disabled)),
-        "min_query_length": max(2, int(getattr(settings, "FETCHUCCINI_MIN_QUERY_LENGTH", 2))),
     })
 
 
@@ -180,12 +175,6 @@ def _validate_query(request):
     query = (request.GET.get("q") or "").strip()
     if not query:
         return None, JsonResponse({"error": "Falta el parámetro q."}, status=400)
-    min_length = max(2, int(getattr(settings, "FETCHUCCINI_MIN_QUERY_LENGTH", 2)))
-    if len(query) < min_length:
-        return None, JsonResponse({
-            "error": f"Ingresá al menos {min_length} caracteres para buscar.",
-            "min_query_length": min_length,
-        }, status=400)
     if len(query) > 120:
         return None, JsonResponse({"error": "La búsqueda es demasiado larga."}, status=400)
     return query, None

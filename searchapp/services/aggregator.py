@@ -100,20 +100,17 @@ class SearchAggregator:
             )
 
     def search(self, card_name: str, store_keys: list[str] | None = None):
-        selected = list(self.adapter_classes) if store_keys is None else list(store_keys)
+        selected = store_keys or list(self.adapter_classes)
         selected = [key for key in selected if key in self.adapter_classes]
         results = []
         runs = []
-
-        if not selected:
-            return [], []
 
         def run(key):
             rows, status = self.search_store(card_name, key)
             return key, rows, status
 
         max_workers = max(1, int(getattr(settings, "FETCHUCCINI_STORE_CONCURRENCY", 4)))
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(selected))) as pool:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(selected) or 1)) as pool:
             futures = [pool.submit(run, key) for key in selected]
             for future in as_completed(futures):
                 _, rows, status = future.result()

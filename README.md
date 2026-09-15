@@ -1,4 +1,4 @@
-# Fetchuccini — v0.37.5
+# Fetchuccini — MVP 0.18
 
 Comparador de precios y stock de cartas de Magic: The Gathering para:
 

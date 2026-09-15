@@ -35,7 +35,6 @@ let currentPageRows = [];
 let currentPage = 1;
 const PAGE_SIZE = 24;
 const MAX_PARALLEL_STORES = 4;
-const MIN_QUERY_LENGTH = Math.max(2, Number(q.minLength || 2));
 let preferredView = localStorage.getItem('fetchuccini:view') || 'cards';
 let currentView = preferredView;
 const activeSearchControllers = new Set();
@@ -454,7 +453,7 @@ function renderCards(filtered){
   }).join('');
 }
 
-function setView(view, {persist=true, renderResults=true}={}){
+function setView(view, {persist=true}={}){
   const requested = view === 'cards' ? 'cards' : 'table';
   if(persist){
     preferredView = requested;
@@ -464,10 +463,6 @@ function setView(view, {persist=true, renderResults=true}={}){
   viewButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.view === currentView));
   table.classList.toggle('hidden', currentView !== 'table');
   cardsGrid.classList.toggle('hidden', currentView !== 'cards');
-  if(renderResults && activeStoreKeys.length){
-    if(currentView === 'table') renderTable(currentPageRows);
-    else renderCards(currentPageRows);
-  }
 }
 
 function syncResponsiveView(){
@@ -569,10 +564,10 @@ function render(){
   const start=(currentPage-1)*PAGE_SIZE;
   currentPageRows=visibleRows.slice(start,start+PAGE_SIZE);
 
-  setView(preferredView, {persist:false, renderResults:false});
-  if(currentView === 'table') renderTable(currentPageRows);
-  else renderCards(currentPageRows);
+  renderTable(currentPageRows);
+  renderCards(currentPageRows);
   renderPagination(visibleRows.length);
+  setView(preferredView, {persist:false});
   updateOverallStatus();
 }
 
@@ -892,38 +887,10 @@ async function fetchOneStore(query, key, generation){
   }
 }
 
-function clearSearchUI(){
-  searchGeneration += 1;
-  abortActiveSearchRequests();
-  activeStoreKeys = [];
-  storeRows = new Map();
-  storeStates = new Map();
-  rows = [];
-  visibleRows = [];
-  currentPageRows = [];
-  bestPrices = new Map();
-  currentPage = 1;
-  body.innerHTML = '';
-  cardsGrid.innerHTML = '';
-  storeStatus.innerHTML = '';
-  bestPricesEl.innerHTML = '';
-  bestPricesEl.classList.add('hidden');
-  pagination.innerHTML = '';
-  pagination.classList.add('hidden');
-  filters.classList.add('hidden');
-  table.classList.add('hidden');
-  cardsGrid.classList.add('hidden');
-  statusEl.textContent = 'Listo para buscar.';
-}
-
 async function runSearch(query, {updateUrl=true}={}){
   closeAutocomplete();
   query = String(query || '').trim();
   if(!query) return;
-  if(query.length < MIN_QUERY_LENGTH){
-    statusEl.textContent = `Ingresá al menos ${MIN_QUERY_LENGTH} caracteres para buscar.`;
-    return;
-  }
   const stores=selectedStores();
   if(!stores.length){statusEl.textContent='Seleccioná al menos una tienda.';return;}
 
@@ -970,7 +937,6 @@ window.addEventListener('popstate',()=>{
   const query = new URLSearchParams(window.location.search).get('q') || '';
   q.value = query;
   if(query) runSearch(query, {updateUrl:false});
-  else clearSearchUI();
 });
 
 restoreStorePreferences();
