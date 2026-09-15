@@ -13,6 +13,7 @@ class BatikuevaAdapter(StoreAdapter):
     name = "La Batikueva"
     BASE = "https://www.labatikuevastore.com"
     PAGE_SIZE = 12
+    MAX_CONSECUTIVE_IRRELEVANT_PAGES = 2
 
     def _card_container(self, node):
         current = node
@@ -109,8 +110,10 @@ class BatikuevaAdapter(StoreAdapter):
     def search(self, card_name: str) -> list[Listing]:
         out = []
         seen_products = set()
+        consecutive_irrelevant_pages = 0
+        max_pages = int(getattr(self.policy, "max_pages", None) or 50)
 
-        for page in range(1, 51):
+        for page in range(1, max_pages + 1):
             try:
                 html, explicit_has_next = self._fetch_page(card_name, page)
             except requests.RequestException as exc:
@@ -125,6 +128,7 @@ class BatikuevaAdapter(StoreAdapter):
 
             page_product_ids = set()
             page_added_any_product = False
+            page_matching_products = 0
 
             for node in nodes:
                 variants = json_attr(node.get("data-variants")) or []
@@ -140,6 +144,8 @@ class BatikuevaAdapter(StoreAdapter):
 
                 if not exactish_card_name(title, card_name):
                     continue
+
+                page_matching_products += 1
 
                 url = urljoin(self.BASE, href or "")
                 # Production-friendly mode: all comparison-critical fields already
@@ -175,6 +181,19 @@ class BatikuevaAdapter(StoreAdapter):
                         product_id=product_id,
                         variant_id=variant.get("id"),
                     ))
+
+            # Tiendanube storefront search can return dozens of pages of
+            # loosely related products. For an interactive exact-card lookup,
+            # two consecutive pages without even a matching product name are a
+            # strong signal that continuing will only add latency. This guard is
+            # deliberately based on title relevance, not stock, so an out-of-
+            # stock exact product still counts as a useful search hit.
+            if page_matching_products:
+                consecutive_irrelevant_pages = 0
+            else:
+                consecutive_irrelevant_pages += 1
+                if consecutive_irrelevant_pages >= self.MAX_CONSECUTIVE_IRRELEVANT_PAGES:
+                    break
 
             # Prefer the API's own pagination signal when it is available.
             if explicit_has_next is False:

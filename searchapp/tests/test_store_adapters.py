@@ -105,6 +105,32 @@ class StoreAdapterContractTests(TestCase):
         self.assertTrue(image.startswith("https:"))
         self.assertIn("/productos/", href)
 
+
+    def test_batikueva_stops_after_irrelevant_pages(self):
+        def page_html(prefix):
+            cards = []
+            for i in range(12):
+                cards.append(
+                    f'<article><a href="/productos/{prefix}-{i}/" title="{prefix} {i}">{prefix} {i}</a>'
+                    f'<span data-product-id="{prefix}-{i}"></span>'
+                    '<span data-variants="[]"></span></article>'
+                )
+            return "".join(cards)
+
+        class CountingBatikueva(BatikuevaAdapter):
+            def __init__(self):
+                super().__init__()
+                self.pages = []
+            def _fetch_page(self, card_name, page):
+                self.pages.append(page)
+                return page_html(f"Unrelated{page}"), True
+
+        adapter = CountingBatikueva()
+        rows = adapter.search("Lightning Bolt")
+        self.assertEqual(rows, [])
+        self.assertEqual(adapter.pages, [1, 2])
+        self.assertFalse(adapter.partial)
+
     def test_magicdealers_search_parser(self):
         html = """<ul><li class="product"><a href="/catalog/lightning_bolt/123"><img src="/bolt.jpg">Lightning Bolt</a><span class="category">Magic 2010</span><span>2 In Stock ARS$ 3.500,00 Near Mint, English</span></li></ul>"""
         rows, next_url = MagicDealersAdapter()._parse_page(html, "Lightning Bolt")

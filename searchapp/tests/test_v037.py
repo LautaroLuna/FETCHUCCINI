@@ -23,6 +23,8 @@ class V037RegressionTests(TestCase):
         self.assertEqual(len(STORE_REGISTRY), 7)
         self.assertIn("mercadia", STORE_REGISTRY)
         self.assertGreater(STORE_REGISTRY["magicdealers"].policy.fresh_cache_seconds, 5 * 60)
+        self.assertEqual(STORE_REGISTRY["batikueva"].policy.max_pages, 6)
+        self.assertLessEqual(STORE_REGISTRY["batikueva"].policy.deadline_seconds, 6)
 
     def test_http_budget_caps_logical_requests(self):
         client = HttpClient()

@@ -156,6 +156,7 @@ def health(request):
                 "max_requests": definition.policy.max_requests,
                 "connect_timeout_seconds": definition.policy.connect_timeout_seconds,
                 "read_timeout_seconds": definition.policy.read_timeout_seconds,
+                "max_pages": definition.policy.max_pages,
             }
             for key, definition in STORE_REGISTRY.items()
         }

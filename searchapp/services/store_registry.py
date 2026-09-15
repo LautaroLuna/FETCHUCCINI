@@ -20,6 +20,7 @@ class StorePolicy:
     max_requests: int = 12
     connect_timeout_seconds: float = 3.0
     read_timeout_seconds: float = 9.0
+    max_pages: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +50,16 @@ _POLICY_OVERRIDES: dict[str, dict] = {
     },
     "batikueva": {
         "currency": "ARS",
-        "policy": StorePolicy(deadline_seconds=20, max_requests=15),
+        # Tiendanube storefront search may keep paginating broad/loosely
+        # related results. Keep the interactive path bounded and let the
+        # adapter stop even earlier when pages contain no matching card names.
+        "policy": StorePolicy(
+            deadline_seconds=6,
+            max_requests=6,
+            connect_timeout_seconds=2.5,
+            read_timeout_seconds=4,
+            max_pages=6,
+        ),
     },
     "magicdealers": {
         "currency": "ARS",

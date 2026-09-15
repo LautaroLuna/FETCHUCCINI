@@ -12,8 +12,10 @@ class StoreAdapter(ABC):
         self.http = http or HttpClient()
         self.partial = False
         self.partial_error: str | None = None
+        self.policy = None
 
     def configure_policy(self, policy) -> None:
+        self.policy = policy
         self.http.configure_budget(
             deadline_seconds=policy.deadline_seconds,
             max_requests=policy.max_requests,
